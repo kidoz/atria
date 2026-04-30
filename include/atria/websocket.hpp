@@ -16,6 +16,7 @@ namespace atria {
 enum class WebSocketCloseCode : std::uint16_t {
   NormalClosure = 1000,
   ProtocolError = 1002,
+  InvalidFramePayloadData = 1007,
   MessageTooBig = 1009,
   InternalError = 1011,
 };

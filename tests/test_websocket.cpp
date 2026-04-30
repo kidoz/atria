@@ -449,3 +449,35 @@ TEST_CASE("websocket rejects unsupported extensions", "[websocket]") {
   std::string response = read_all(*conn);
   CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
 }
+
+TEST_CASE("websocket rejects invalid utf-8 in text frames", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  // 0xFF is an invalid UTF-8 start byte
+  std::string invalid_utf8 = "\xff\xff";
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, invalid_utf8)).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1007);
+}
+
+TEST_CASE("websocket rejects invalid utf-8 in fragmented text frames", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  std::string frames;
+  frames.append(client_frame(0x1, "\xff", true, false));
+  frames.append(client_frame(0x0, "\xff", true, true));
+  REQUIRE(atria::platform::send_all(conn, frames).has_value());
+
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1007);
+}

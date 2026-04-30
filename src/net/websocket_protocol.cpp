@@ -337,6 +337,54 @@ ParseResult parse_frame(std::string_view buffer, std::size_t max_frame_bytes) {
   };
 }
 
+bool is_valid_utf8(std::string_view data) noexcept {
+  auto bytes = reinterpret_cast<const unsigned char*>(data.data());
+  std::size_t i = 0;
+  std::size_t len = data.size();
+
+  while (i < len) {
+    unsigned char c = bytes[i];
+
+    if (c <= 0x7FU) {
+      // 1-byte sequence (ASCII)
+      ++i;
+    } else if ((c & 0xE0U) == 0xC0U) {
+      // 2-byte sequence
+      if (i + 1 >= len) return false;
+      unsigned char c2 = bytes[i + 1];
+      if ((c2 & 0xC0U) != 0x80U) return false;
+      // Overlong encoding check
+      if ((c & 0x1EU) == 0) return false;
+      i += 2;
+    } else if ((c & 0xF0U) == 0xE0U) {
+      // 3-byte sequence
+      if (i + 2 >= len) return false;
+      unsigned char c2 = bytes[i + 1];
+      unsigned char c3 = bytes[i + 2];
+      if ((c2 & 0xC0U) != 0x80U || (c3 & 0xC0U) != 0x80U) return false;
+      // Overlong encoding check and surrogates
+      if (c == 0xE0U && (c2 & 0x20U) == 0) return false;
+      if (c == 0xEDU && (c2 & 0x20U) != 0) return false; // Surrogate halves
+      i += 3;
+    } else if ((c & 0xF8U) == 0xF0U) {
+      // 4-byte sequence
+      if (i + 3 >= len) return false;
+      unsigned char c2 = bytes[i + 1];
+      unsigned char c3 = bytes[i + 2];
+      unsigned char c4 = bytes[i + 3];
+      if ((c2 & 0xC0U) != 0x80U || (c3 & 0xC0U) != 0x80U || (c4 & 0xC0U) != 0x80U) return false;
+      // Overlong encoding check and invalid code points
+      if (c == 0xF0U && (c2 & 0x30U) == 0) return false;
+      if (c > 0xF4U || (c == 0xF4U && c2 > 0x8FU)) return false; // > U+10FFFF
+      i += 4;
+    } else {
+      // Invalid byte
+      return false;
+    }
+  }
+  return true;
+}
+
 std::string encode_frame(Opcode opcode, std::string_view payload) {
   std::string out;
   out.reserve(payload.size() + 14);

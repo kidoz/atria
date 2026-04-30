@@ -677,6 +677,10 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
     }
     if (frame.fin) {
       if (frame.opcode == Opcode::Text) {
+        if (!websocket::is_valid_utf8(frame.payload)) {
+          queue_websocket_close(WebSocketCloseCode::InvalidFramePayloadData, "invalid utf-8 payload");
+          return;
+        }
         websocket_session_.receive_text(frame.payload);
       } else {
         websocket_session_.receive_binary(frame.payload);
@@ -706,6 +710,10 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
       std::string message = std::move(websocket_message_buffer_);
       websocket_message_buffer_.clear();
       if (opcode == Opcode::Text) {
+        if (!websocket::is_valid_utf8(message)) {
+          queue_websocket_close(WebSocketCloseCode::InvalidFramePayloadData, "invalid utf-8 payload");
+          return;
+        }
         websocket_session_.receive_text(message);
       } else {
         websocket_session_.receive_binary(message);

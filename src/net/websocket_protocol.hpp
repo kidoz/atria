@@ -50,6 +50,8 @@ make_accept_key(std::string_view client_key);
 
 [[nodiscard]] ParseResult parse_frame(std::string_view buffer, std::size_t max_frame_bytes);
 
+[[nodiscard]] bool is_valid_utf8(std::string_view data) noexcept;
+
 [[nodiscard]] std::string encode_frame(Opcode opcode, std::string_view payload);
 [[nodiscard]] std::string encode_close_frame(WebSocketCloseCode code, std::string_view reason);
 
