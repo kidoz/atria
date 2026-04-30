@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace atria {
 
@@ -37,6 +38,18 @@ struct ServerConfig {
   std::size_t max_websocket_message_bytes{std::size_t{1024} * 1024};
   std::size_t max_websocket_queue_bytes{std::size_t{1024} * 1024};
   std::uint32_t websocket_idle_timeout_ms{60000};
+
+  // Optional browser Origin policy for WebSocket upgrades.
+  // Empty allowlist + require=false preserves current behavior: all origins and missing
+  // Origin headers are accepted. With require=true, an empty allowlist requires Origin
+  // presence without restricting its value. Values are exact matches; "*" allows any
+  // present origin.
+  std::vector<std::string> websocket_allowed_origins;
+  bool websocket_require_origin{false};
+
+  // When true and worker_threads > 0, WebSocket text/binary callbacks run on the worker
+  // pool. Socket I/O and outbound queue mutation still happen on the event-loop thread.
+  bool websocket_worker_callbacks{false};
 };
 
 }  // namespace atria

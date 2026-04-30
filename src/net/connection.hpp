@@ -34,11 +34,12 @@ namespace atria::net {
 class Connection;
 
 enum class ConnectionState : std::uint8_t {
-  Reading,      // accumulating header + body bytes
-  Dispatching,  // request submitted to worker pool, awaiting completion
-  Writing,      // sending serialized response
-  WebSocket,    // upgraded RFC 6455 connection
-  Closing,      // socket should be closed and connection removed
+  Reading,               // accumulating header + body bytes
+  Dispatching,           // request submitted to worker pool, awaiting completion
+  Writing,               // sending serialized response
+  WebSocket,             // upgraded RFC 6455 connection
+  WebSocketDispatching,  // WebSocket message callback submitted to worker pool
+  Closing,               // socket should be closed and connection removed
 };
 
 // Hook called by Connection when it has a fully-parsed request and a worker pool is
@@ -49,6 +50,7 @@ enum class ConnectionState : std::uint8_t {
 using DispatchHook = std::function<void(std::shared_ptr<Connection> conn, Request request)>;
 using ConnectionTask = std::function<void(Connection&)>;
 using LoopTaskHook = std::function<void(std::weak_ptr<Connection> conn, ConnectionTask task)>;
+using WebSocketCallbackHook = std::function<void(std::function<void()> callback)>;
 
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
@@ -59,6 +61,7 @@ public:
       Application& app,
       const ServerConfig& config,
       DispatchHook dispatch_hook,
+      WebSocketCallbackHook websocket_callback_hook,
       LoopTaskHook loop_task_hook
   );
   ~Connection() = default;
@@ -105,7 +108,10 @@ private:
   void on_websocket_readable();
   void on_websocket_writable();
   void process_websocket_buffer();
-  void handle_websocket_frame(const websocket::Frame& frame);
+  void handle_websocket_frame(websocket::Frame frame);
+  void dispatch_websocket_text(std::string message);
+  void dispatch_websocket_binary(std::string message);
+  void finish_websocket_callback(bool failed);
   void queue_websocket_frame(websocket::Opcode opcode, std::string_view payload);
   void queue_websocket_close(WebSocketCloseCode code, std::string_view reason);
   void flush_websocket_output();
@@ -116,6 +122,7 @@ private:
   Application& app_;
   const ServerConfig& config_;
   DispatchHook dispatch_hook_;
+  WebSocketCallbackHook websocket_callback_hook_;
   LoopTaskHook loop_task_hook_;
   ParseLimits limits_;
 

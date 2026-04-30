@@ -156,6 +156,8 @@ int ServerRuntime::run(std::atomic<bool>& running) {
       return connection.wants_write() ? IoEvent::Write : IoEvent::None;
     case ConnectionState::WebSocket:
       return connection.wants_write() ? (IoEvent::Read | IoEvent::Write) : IoEvent::Read;
+    case ConnectionState::WebSocketDispatching:
+      return connection.wants_write() ? IoEvent::Write : IoEvent::None;
     case ConnectionState::Dispatching:
     case ConnectionState::Closing:
       return IoEvent::None;
@@ -186,6 +188,13 @@ int ServerRuntime::run(std::atomic<bool>& running) {
         }
         loop_signal->notifier->notify();
       });
+    };
+  }
+
+  WebSocketCallbackHook websocket_callback_hook;
+  if (pool && config_.websocket_worker_callbacks) {
+    websocket_callback_hook = [&pool](std::function<void()> callback) {
+      pool->submit(std::move(callback));
     };
   }
 
@@ -222,6 +231,7 @@ int ServerRuntime::run(std::atomic<bool>& running) {
           app_,
           config_,
           dispatch_hook,
+          websocket_callback_hook,
           loop_task_hook
       );
       Connection* raw = conn.get();

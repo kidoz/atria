@@ -4,10 +4,12 @@
 #include "platform/socket.hpp"
 
 #include <array>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -80,12 +82,20 @@ void wait_until_ready(std::uint16_t port) {
   return out;
 }
 
-[[nodiscard]] std::string
-websocket_handshake(std::string_view path = "/ws", std::string_view protocols = {}) {
+[[nodiscard]] std::string websocket_handshake(
+    std::string_view path = "/ws",
+    std::string_view protocols = {},
+    std::string_view origin = {}
+) {
   std::string request = "GET ";
   request.append(path);
   request.append(" HTTP/1.1\r\n");
   request.append("Host: 127.0.0.1\r\n");
+  if (!origin.empty()) {
+    request.append("Origin: ");
+    request.append(origin);
+    request.append("\r\n");
+  }
   request.append("Upgrade: websocket\r\n");
   request.append("Connection: keep-alive, Upgrade\r\n");
   request.append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n");
@@ -219,6 +229,10 @@ open_websocket(std::uint16_t port, std::string_view path = "/ws") {
   );
 }
 
+[[nodiscard]] std::size_t current_thread_hash() {
+  return std::hash<std::thread::id>{}(std::this_thread::get_id());
+}
+
 }  // namespace
 
 TEST_CASE("websocket handshake returns switching protocols", "[websocket]") {
@@ -333,6 +347,122 @@ TEST_CASE("websocket rejects invalid subprotocol header", "[websocket]") {
   CHECK(response.find("invalid websocket subprotocol") != std::string::npos);
 }
 
+TEST_CASE("websocket allows missing origin by default", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(atria::platform::send_all(*conn, websocket_handshake()).has_value());
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+}
+
+TEST_CASE("websocket allows configured origin", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) {
+    cfg.websocket_allowed_origins = {"https://app.example"};
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", {}, "https://app.example"))
+          .has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+}
+
+TEST_CASE("websocket rejects disallowed origin", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) {
+    cfg.websocket_allowed_origins = {"https://app.example"};
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", {}, "https://evil.example"))
+          .has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 403 Forbidden\r\n") == 0);
+  CHECK(response.find("websocket origin is not allowed") != std::string::npos);
+}
+
+TEST_CASE("websocket can require origin", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) { cfg.websocket_require_origin = true; });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(atria::platform::send_all(*conn, websocket_handshake()).has_value());
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 403 Forbidden\r\n") == 0);
+}
+
+TEST_CASE("websocket require origin accepts any present origin without allowlist", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) { cfg.websocket_require_origin = true; });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", {}, "https://any.example"))
+          .has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+}
+
+TEST_CASE("websocket wildcard origin allows any present origin", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) {
+    cfg.websocket_allowed_origins = {"*"};
+    cfg.websocket_require_origin = true;
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", {}, "https://any.example"))
+          .has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+}
+
 TEST_CASE("websocket route echoes text frames", "[websocket]") {
   atria::Application app;
   app.websocket("/ws", [](atria::WebSocketSession& session) {
@@ -357,6 +487,88 @@ TEST_CASE("websocket route echoes text frames", "[websocket]") {
   auto frame = read_server_frame(*conn);
   CHECK(frame.opcode == 0x1);
   CHECK(frame.payload == "echo:hello");
+}
+
+TEST_CASE("websocket callbacks stay on loop thread by default with worker pool", "[websocket]") {
+  atria::Application app;
+  std::atomic<std::size_t> loop_thread_hash{0};
+  std::atomic<bool> callback_on_loop{false};
+
+  app.websocket("/ws", [&](atria::WebSocketSession& session) {
+    session.on_text([&](atria::WebSocketSession& ws, std::string_view) {
+      callback_on_loop.store(
+          current_thread_hash() == loop_thread_hash.load(),
+          std::memory_order_release
+      );
+      ws.send_text("loop");
+    });
+  });
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) { cfg.worker_threads = 1; });
+  loop_thread_hash.store(std::hash<std::thread::id>{}(server.thread.get_id()));
+
+  auto conn = open_websocket(server.port);
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
+  auto frame = read_server_frame(conn);
+
+  CHECK(frame.opcode == 0x1);
+  CHECK(frame.payload == "loop");
+  CHECK(callback_on_loop.load(std::memory_order_acquire));
+}
+
+TEST_CASE("websocket text callbacks can run on worker pool", "[websocket]") {
+  atria::Application app;
+  std::atomic<std::size_t> loop_thread_hash{0};
+  std::atomic<bool> callback_on_worker{false};
+
+  app.websocket("/ws", [&](atria::WebSocketSession& session) {
+    session.on_text([&](atria::WebSocketSession& ws, std::string_view message) {
+      callback_on_worker.store(
+          current_thread_hash() != loop_thread_hash.load(),
+          std::memory_order_release
+      );
+      std::string reply = "worker:";
+      reply.append(message);
+      ws.send_text(std::move(reply));
+    });
+  });
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) {
+    cfg.worker_threads = 1;
+    cfg.websocket_worker_callbacks = true;
+  });
+  loop_thread_hash.store(std::hash<std::thread::id>{}(server.thread.get_id()));
+
+  auto conn = open_websocket(server.port);
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
+  auto frame = read_server_frame(conn);
+
+  CHECK(frame.opcode == 0x1);
+  CHECK(frame.payload == "worker:hello");
+  CHECK(callback_on_worker.load(std::memory_order_acquire));
+}
+
+TEST_CASE("websocket worker callback failure closes connection", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession& session) {
+    session.on_text([](atria::WebSocketSession&, std::string_view) {
+      throw std::runtime_error{"boom"};
+    });
+  });
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) {
+    cfg.worker_threads = 1;
+    cfg.websocket_worker_callbacks = true;
+  });
+
+  auto conn = open_websocket(server.port);
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
+  auto frame = read_server_frame(conn);
+
+  CHECK(close_code(frame) == 1011);
 }
 
 TEST_CASE("websocket sender can enqueue from another thread", "[websocket]") {

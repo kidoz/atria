@@ -27,6 +27,10 @@ namespace atria::net {
 
 namespace {
 
+[[nodiscard]] bool is_websocket_state(ConnectionState state) noexcept {
+  return state == ConnectionState::WebSocket || state == ConnectionState::WebSocketDispatching;
+}
+
 [[nodiscard]] Response error_response(Status status, std::string_view message) {
   Response r{status};
   r.set_header("Content-Type", "application/json; charset=utf-8");
@@ -34,6 +38,9 @@ namespace {
   switch (status) {
   case Status::BadRequest:
     body.append("bad_request");
+    break;
+  case Status::Forbidden:
+    body.append("forbidden");
     break;
   case Status::PayloadTooLarge:
     body.append("payload_too_large");
@@ -197,6 +204,23 @@ requested_websocket_subprotocols(const Request& request) {
   return protocols;
 }
 
+[[nodiscard]] bool
+websocket_origin_allowed(const Request& request, const ServerConfig& config) noexcept {
+  auto origin = request.header("Origin");
+  if (!origin.has_value()) {
+    return !config.websocket_require_origin;
+  }
+  if (config.websocket_allowed_origins.empty()) {
+    return true;
+  }
+  for (const auto& allowed : config.websocket_allowed_origins) {
+    if (allowed == "*" || allowed == *origin) {
+      return true;
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] std::optional<WebSocketCloseCode>
 close_code_from_payload(std::string_view payload) noexcept {
   if (payload.size() < 2) {
@@ -226,12 +250,14 @@ Connection::Connection(
     Application& app,
     const ServerConfig& config,
     DispatchHook dispatch_hook,
+    WebSocketCallbackHook websocket_callback_hook,
     LoopTaskHook loop_task_hook
 )
     : socket_(std::move(socket)),
       app_(app),
       config_(config),
       dispatch_hook_(std::move(dispatch_hook)),
+      websocket_callback_hook_(std::move(websocket_callback_hook)),
       loop_task_hook_(std::move(loop_task_hook)),
       limits_(parse_limits_from(config)),
       current_timeout_(std::chrono::milliseconds{config.read_timeout_ms}) {}
@@ -264,6 +290,9 @@ bool Connection::wants_write() const noexcept {
     return stream_mode_ != StreamMode::None && !stream_finished_ && !stream_waiting_for_wake_;
   }
   if (state_ == ConnectionState::WebSocket) {
+    return !write_buffer_.empty() || !websocket_outbox_.empty();
+  }
+  if (state_ == ConnectionState::WebSocketDispatching) {
     return !write_buffer_.empty() || !websocket_outbox_.empty();
   }
   return false;
@@ -522,7 +551,7 @@ void Connection::pull_next_chunk() {
 }
 
 void Connection::on_writable() {
-  if (state_ == ConnectionState::WebSocket) {
+  if (is_websocket_state(state_)) {
     on_websocket_writable();
     return;
   }
@@ -602,6 +631,15 @@ void Connection::finish_write() {
 }
 
 void Connection::start_websocket(Request request) {
+  if (!websocket_origin_allowed(request, config_)) {
+    start_writing(
+        error_response(Status::Forbidden, "websocket origin is not allowed"),
+        /*keep_alive=*/false,
+        HttpVersion::Http11
+    );
+    return;
+  }
+
   auto version = request.header("Sec-WebSocket-Version");
   if (!version.has_value() || *version != "13") {
     start_writing(
@@ -748,11 +786,11 @@ void Connection::process_websocket_buffer() {
       return;
     }
     read_buffer_.erase(0, parsed.consumed);
-    handle_websocket_frame(parsed.frame);
+    handle_websocket_frame(std::move(parsed.frame));
   }
 }
 
-void Connection::handle_websocket_frame(const websocket::Frame& frame) {
+void Connection::handle_websocket_frame(websocket::Frame frame) {
   using websocket::Opcode;
 
   switch (frame.opcode) {
@@ -771,9 +809,9 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
           );
           return;
         }
-        websocket_session_.receive_text(frame.payload);
+        dispatch_websocket_text(std::move(frame.payload));
       } else {
-        websocket_session_.receive_binary(frame.payload);
+        dispatch_websocket_binary(std::move(frame.payload));
       }
       return;
     }
@@ -807,9 +845,9 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
           );
           return;
         }
-        websocket_session_.receive_text(message);
+        dispatch_websocket_text(std::move(message));
       } else {
-        websocket_session_.receive_binary(message);
+        dispatch_websocket_binary(std::move(message));
       }
     }
     return;
@@ -827,6 +865,96 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
     websocket_close_after_write_ = true;
     return;
   }
+  }
+}
+
+void Connection::dispatch_websocket_text(std::string message) {
+  if (!websocket_callback_hook_) {
+    websocket_session_.receive_text(message);
+    return;
+  }
+
+  state_ = ConnectionState::WebSocketDispatching;
+  current_timeout_ = std::chrono::milliseconds{config_.read_timeout_ms};
+  last_activity_ = Clock::now();
+
+  WebSocketSession session = websocket_session_;
+  std::weak_ptr<Connection> weak = weak_from_this();
+  std::shared_ptr<Connection> lifetime = shared_from_this();
+  auto post = loop_task_hook_;
+  websocket_callback_hook_([lifetime = std::move(lifetime),
+                            weak,
+                            post,
+                            session = std::move(session),
+                            message = std::move(message)]() mutable {
+    (void)lifetime;
+    bool failed = false;
+    try {
+      session.receive_text(message);
+    } catch (...) {
+      failed = true;
+    }
+    auto task = [failed](Connection& connection) { connection.finish_websocket_callback(failed); };
+    if (post) {
+      post(weak, std::move(task));
+      return;
+    }
+    if (auto connection = weak.lock()) {
+      task(*connection);
+    }
+  });
+}
+
+void Connection::dispatch_websocket_binary(std::string message) {
+  if (!websocket_callback_hook_) {
+    websocket_session_.receive_binary(message);
+    return;
+  }
+
+  state_ = ConnectionState::WebSocketDispatching;
+  current_timeout_ = std::chrono::milliseconds{config_.read_timeout_ms};
+  last_activity_ = Clock::now();
+
+  WebSocketSession session = websocket_session_;
+  std::weak_ptr<Connection> weak = weak_from_this();
+  std::shared_ptr<Connection> lifetime = shared_from_this();
+  auto post = loop_task_hook_;
+  websocket_callback_hook_([lifetime = std::move(lifetime),
+                            weak,
+                            post,
+                            session = std::move(session),
+                            message = std::move(message)]() mutable {
+    (void)lifetime;
+    bool failed = false;
+    try {
+      session.receive_binary(message);
+    } catch (...) {
+      failed = true;
+    }
+    auto task = [failed](Connection& connection) { connection.finish_websocket_callback(failed); };
+    if (post) {
+      post(weak, std::move(task));
+      return;
+    }
+    if (auto connection = weak.lock()) {
+      task(*connection);
+    }
+  });
+}
+
+void Connection::finish_websocket_callback(bool failed) {
+  if (state_ != ConnectionState::WebSocketDispatching) {
+    return;
+  }
+  state_ = ConnectionState::WebSocket;
+  current_timeout_ = std::chrono::milliseconds{config_.websocket_idle_timeout_ms};
+  last_activity_ = Clock::now();
+  if (failed) {
+    queue_websocket_close(WebSocketCloseCode::InternalError, "websocket callback failed");
+    return;
+  }
+  if (!read_buffer_.empty()) {
+    process_websocket_buffer();
   }
 }
 
@@ -859,7 +987,7 @@ void Connection::on_websocket_writable() {
 }
 
 void Connection::flush_websocket_output() {
-  while (state_ == ConnectionState::WebSocket) {
+  while (is_websocket_state(state_)) {
     if (write_offset_ >= write_buffer_.size()) {
       if (!write_buffer_.empty()) {
         write_buffer_.clear();
