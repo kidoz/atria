@@ -1,11 +1,11 @@
 #include "atria/json.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <string>
 
 using atria::Json;
+using atria::JsonKeyStyle;
 
 TEST_CASE("parses JSON primitives", "[json]") {
   CHECK(Json::parse("null")->is_null());
@@ -78,4 +78,66 @@ TEST_CASE("round-trips parse and stringify", "[json]") {
   auto parsed = Json::parse(original);
   REQUIRE(parsed.has_value());
   CHECK(parsed->stringify() == original);
+}
+
+TEST_CASE("stringify converts object keys recursively", "[json][naming]") {
+  Json j = Json::object({
+      {"user_id", std::int64_t{42}},
+      {"display_name", std::string{"Ada"}},
+      {"profile_data",
+       Json::object({
+           {"created_at", std::string{"today"}},
+           {"http_status_code", std::int64_t{200}},
+       })},
+      {"items", Json::array({Json::object({{"item_name", std::string{"one"}}})})},
+  });
+
+  CHECK(
+      j.stringify(JsonKeyStyle::CamelCase) ==
+      R"({"userId":42,"displayName":"Ada","profileData":{"createdAt":"today","httpStatusCode":200},"items":[{"itemName":"one"}]})"
+  );
+  CHECK(
+      j.stringify(JsonKeyStyle::PascalCase) ==
+      R"({"UserId":42,"DisplayName":"Ada","ProfileData":{"CreatedAt":"today","HttpStatusCode":200},"Items":[{"ItemName":"one"}]})"
+  );
+  CHECK(
+      j.stringify(JsonKeyStyle::SnakeCase) ==
+      R"({"user_id":42,"display_name":"Ada","profile_data":{"created_at":"today","http_status_code":200},"items":[{"item_name":"one"}]})"
+  );
+}
+
+TEST_CASE("parse converts object keys recursively", "[json][naming]") {
+  auto parsed = Json::parse(
+      R"({"UserId":42,"displayName":"Ada","profileData":{"HTTPStatusCode":200},"items":[{"ItemName":"one"}]})",
+      {},
+      JsonKeyStyle::SnakeCase
+  );
+  REQUIRE(parsed.has_value());
+
+  REQUIRE(parsed->find("user_id") != nullptr);
+  CHECK(parsed->find("user_id")->as_int() == 42);
+  REQUIRE(parsed->find("display_name") != nullptr);
+  CHECK(parsed->find("display_name")->as_string() == "Ada");
+
+  const Json* profile = parsed->find("profile_data");
+  REQUIRE(profile != nullptr);
+  REQUIRE(profile->find("http_status_code") != nullptr);
+  CHECK(profile->find("http_status_code")->as_int() == 200);
+
+  const Json* items = parsed->find("items");
+  REQUIRE(items != nullptr);
+  REQUIRE(items->is_array());
+  REQUIRE(items->as_array().size() == 1);
+  REQUIRE(items->as_array()[0].find("item_name") != nullptr);
+  CHECK(items->as_array()[0].find("item_name")->as_string() == "one");
+}
+
+TEST_CASE("key style preserve remains the default", "[json][naming]") {
+  auto parsed = Json::parse(R"({"displayName":"Ada"})");
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->find("displayName") != nullptr);
+  CHECK(parsed->find("display_name") == nullptr);
+
+  Json j = Json::object({{"displayName", std::string{"Ada"}}});
+  CHECK(j.stringify() == R"({"displayName":"Ada"})");
 }

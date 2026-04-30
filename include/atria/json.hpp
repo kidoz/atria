@@ -22,8 +22,15 @@ struct JsonParseLimits {
   std::size_t max_string_length{std::size_t{1024} * std::size_t{1024}};
 };
 
+enum class JsonKeyStyle : std::uint8_t {
+  Preserve,
+  CamelCase,
+  SnakeCase,
+  PascalCase,
+};
+
 class Json {
- public:
+public:
   using ParseLimits = JsonParseLimits;
 
   enum class Type : std::uint8_t {
@@ -40,16 +47,16 @@ class Json {
   using Object = std::vector<std::pair<std::string, Json>>;
 
   Json() noexcept = default;
-  Json(std::nullptr_t) noexcept;  // NOLINT(google-explicit-constructor)
-  Json(bool value) noexcept;       // NOLINT(google-explicit-constructor)
-  Json(int value) noexcept;        // NOLINT(google-explicit-constructor)
+  Json(std::nullptr_t) noexcept;      // NOLINT(google-explicit-constructor)
+  Json(bool value) noexcept;          // NOLINT(google-explicit-constructor)
+  Json(int value) noexcept;           // NOLINT(google-explicit-constructor)
   Json(std::int64_t value) noexcept;  // NOLINT(google-explicit-constructor)
-  Json(double value) noexcept;     // NOLINT(google-explicit-constructor)
-  Json(const char* value);          // NOLINT(google-explicit-constructor)
-  Json(std::string value);          // NOLINT(google-explicit-constructor)
-  Json(std::string_view value);     // NOLINT(google-explicit-constructor)
-  Json(Array value);                // NOLINT(google-explicit-constructor)
-  Json(Object value);               // NOLINT(google-explicit-constructor)
+  Json(double value) noexcept;        // NOLINT(google-explicit-constructor)
+  Json(const char* value);            // NOLINT(google-explicit-constructor)
+  Json(std::string value);            // NOLINT(google-explicit-constructor)
+  Json(std::string_view value);       // NOLINT(google-explicit-constructor)
+  Json(Array value);                  // NOLINT(google-explicit-constructor)
+  Json(Object value);                 // NOLINT(google-explicit-constructor)
 
   Json(std::initializer_list<std::pair<std::string, Json>> obj);
 
@@ -59,12 +66,19 @@ class Json {
   [[nodiscard]] Type type() const noexcept;
 
   [[nodiscard]] bool is_null() const noexcept { return type() == Type::Null; }
+
   [[nodiscard]] bool is_bool() const noexcept { return type() == Type::Bool; }
+
   [[nodiscard]] bool is_number() const noexcept;
+
   [[nodiscard]] bool is_int() const noexcept { return type() == Type::Int; }
+
   [[nodiscard]] bool is_double() const noexcept { return type() == Type::Double; }
+
   [[nodiscard]] bool is_string() const noexcept { return type() == Type::String; }
+
   [[nodiscard]] bool is_array() const noexcept { return type() == Type::Array; }
+
   [[nodiscard]] bool is_object() const noexcept { return type() == Type::Object; }
 
   [[nodiscard]] bool as_bool() const;
@@ -76,14 +90,17 @@ class Json {
 
   [[nodiscard]] const Json* find(std::string_view key) const;
 
-  [[nodiscard]] static std::expected<Json, JsonError> parse(std::string_view text,
-                                                            ParseLimits limits = {});
+  [[nodiscard]] static std::expected<Json, JsonError>
+  parse(std::string_view text, ParseLimits limits = {});
+  [[nodiscard]] static std::expected<Json, JsonError>
+  parse(std::string_view text, ParseLimits limits, JsonKeyStyle key_style);
 
   [[nodiscard]] std::string stringify() const;
+  [[nodiscard]] std::string stringify(JsonKeyStyle key_style) const;
 
- private:
-  using Variant = std::variant<std::monostate, bool, std::int64_t, double, std::string, Array,
-                                Object>;
+private:
+  using Variant =
+      std::variant<std::monostate, bool, std::int64_t, double, std::string, Array, Object>;
   Variant value_;
 };
 
