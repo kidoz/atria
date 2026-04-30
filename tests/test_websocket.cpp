@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -90,10 +91,27 @@ void wait_until_ready(std::uint16_t port) {
   return request;
 }
 
-[[nodiscard]] std::string masked_client_frame(std::uint8_t opcode, std::string_view payload) {
+[[nodiscard]] std::string
+client_frame(std::uint8_t opcode, std::string_view payload, bool masked = true, bool fin = true) {
   std::string frame;
-  frame.push_back(static_cast<char>(0x80U | opcode));
-  frame.push_back(static_cast<char>(0x80U | static_cast<std::uint8_t>(payload.size())));
+  frame.push_back(static_cast<char>((fin ? 0x80U : 0U) | opcode));
+  auto mask_bit = masked ? 0x80U : 0U;
+  if (payload.size() <= 125) {
+    frame.push_back(static_cast<char>(mask_bit | static_cast<std::uint8_t>(payload.size())));
+  } else if (payload.size() <= 0xFFFFU) {
+    frame.push_back(static_cast<char>(mask_bit | 126U));
+    frame.push_back(static_cast<char>((payload.size() >> 8U) & 0xFFU));
+    frame.push_back(static_cast<char>(payload.size() & 0xFFU));
+  } else {
+    frame.push_back(static_cast<char>(mask_bit | 127U));
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      frame.push_back(static_cast<char>((payload.size() >> static_cast<unsigned>(shift)) & 0xFFU));
+    }
+  }
+  if (!masked) {
+    frame.append(payload);
+    return frame;
+  }
   std::array<unsigned char, 4> mask{0x11, 0x22, 0x33, 0x44};
   for (auto byte : mask) {
     frame.push_back(static_cast<char>(byte));
@@ -102,6 +120,17 @@ void wait_until_ready(std::uint16_t port) {
     frame.push_back(static_cast<char>(static_cast<unsigned char>(payload[i]) ^ mask[i % 4]));
   }
   return frame;
+}
+
+[[nodiscard]] std::string masked_client_frame(std::uint8_t opcode, std::string_view payload) {
+  return client_frame(opcode, payload);
+}
+
+[[nodiscard]] std::string close_payload(std::uint16_t code) {
+  std::string payload;
+  payload.push_back(static_cast<char>((code >> 8U) & 0xFFU));
+  payload.push_back(static_cast<char>(code & 0xFFU));
+  return payload;
 }
 
 struct ServerFrame {
@@ -141,7 +170,11 @@ struct ServerFrame {
   return ServerFrame{static_cast<std::uint8_t>(first & 0x0FU), bytes.substr(offset, payload_len)};
 }
 
-void start_server(RunningServer& server, atria::Application& app) {
+void start_server(
+    RunningServer& server,
+    atria::Application& app,
+    const std::function<void(atria::ServerConfig&)>& configure = {}
+) {
   server.port = pick_port();
   REQUIRE(server.port != 0);
   server.thread = std::thread{[&] {
@@ -149,10 +182,33 @@ void start_server(RunningServer& server, atria::Application& app) {
     cfg.host = std::string{kHost};
     cfg.port = server.port;
     cfg.worker_threads = 0;
+    if (configure) {
+      configure(cfg);
+    }
     app.listen(cfg);
   }};
   server.app = &app;
   wait_until_ready(server.port);
+}
+
+[[nodiscard]] atria::platform::SocketHandle
+open_websocket(std::uint16_t port, std::string_view path = "/ws") {
+  auto conn = atria::platform::connect_tcp(kHost, port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(atria::platform::send_all(*conn, websocket_handshake(path)).has_value());
+  auto response = read_until(*conn, "\r\n\r\n");
+  REQUIRE(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+  return std::move(*conn);
+}
+
+[[nodiscard]] std::uint16_t close_code(const ServerFrame& frame) {
+  REQUIRE(frame.opcode == 0x8);
+  REQUIRE(frame.payload.size() >= 2);
+  return static_cast<std::uint16_t>(
+      (static_cast<std::uint16_t>(static_cast<unsigned char>(frame.payload[0])) << 8U) |
+      static_cast<unsigned char>(frame.payload[1])
+  );
 }
 
 }  // namespace
@@ -202,6 +258,177 @@ TEST_CASE("websocket route echoes text frames", "[websocket]") {
   auto frame = read_server_frame(*conn);
   CHECK(frame.opcode == 0x1);
   CHECK(frame.payload == "echo:hello");
+}
+
+TEST_CASE("websocket sender can enqueue from another thread", "[websocket]") {
+  atria::Application app;
+  std::jthread producer;
+  app.websocket("/ws", [&producer](atria::WebSocketSession& session) {
+    atria::WebSocketSender sender = session.sender();
+    producer = std::jthread{[sender] {
+      std::this_thread::sleep_for(std::chrono::milliseconds{50});
+      sender.send_text("from-thread");
+    }};
+  });
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  auto frame = read_server_frame(conn);
+  CHECK(frame.opcode == 0x1);
+  CHECK(frame.payload == "from-thread");
+}
+
+TEST_CASE("websocket path params are available on the session request", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws/{room}", [](atria::WebSocketSession& session) {
+    session.on_text([](atria::WebSocketSession& ws, std::string_view message) {
+      std::string reply{ws.request().path_param("room").value_or("missing")};
+      reply.push_back(':');
+      reply.append(message);
+      ws.send_text(std::move(reply));
+    });
+  });
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port, "/ws/lobby");
+
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(frame.opcode == 0x1);
+  CHECK(frame.payload == "lobby:hello");
+}
+
+TEST_CASE("websocket responds to ping with pong", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x9, "beat")).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(frame.opcode == 0xA);
+  CHECK(frame.payload == "beat");
+}
+
+TEST_CASE("websocket echoes fragmented text messages", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession& session) {
+    session.on_text([](atria::WebSocketSession& ws, std::string_view message) {
+      std::string reply = "joined:";
+      reply.append(message);
+      ws.send_text(std::move(reply));
+    });
+  });
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  std::string frames;
+  frames.append(client_frame(0x1, "hel", true, false));
+  frames.append(client_frame(0x0, "lo", true, true));
+  REQUIRE(atria::platform::send_all(conn, frames).has_value());
+
+  auto frame = read_server_frame(conn);
+  CHECK(frame.opcode == 0x1);
+  CHECK(frame.payload == "joined:hello");
+}
+
+TEST_CASE("websocket close handshake returns a close frame", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  REQUIRE(atria::platform::send_all(conn, client_frame(0x8, close_payload(1000))).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1000);
+}
+
+TEST_CASE("websocket rejects unmasked client frames", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  REQUIRE(atria::platform::send_all(conn, client_frame(0x1, "oops", false)).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1002);
+}
+
+TEST_CASE("websocket rejects invalid opcodes", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+  auto conn = open_websocket(server.port);
+
+  REQUIRE(atria::platform::send_all(conn, client_frame(0xB, "", true)).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1002);
+}
+
+TEST_CASE("websocket rejects oversized frames", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) { cfg.max_websocket_frame_bytes = 4; });
+  auto conn = open_websocket(server.port);
+
+  REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1009);
+}
+
+TEST_CASE("websocket rejects oversized reassembled messages", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& cfg) { cfg.max_websocket_message_bytes = 4; });
+  auto conn = open_websocket(server.port);
+
+  std::string frames;
+  frames.append(client_frame(0x1, "he", true, false));
+  frames.append(client_frame(0x0, "llo", true, true));
+  REQUIRE(atria::platform::send_all(conn, frames).has_value());
+
+  auto frame = read_server_frame(conn);
+  CHECK(close_code(frame) == 1009);
+}
+
+TEST_CASE("websocket rejects invalid handshake key", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+
+  std::string request = websocket_handshake();
+  auto key_pos = request.find("Sec-WebSocket-Key:");
+  REQUIRE(key_pos != std::string::npos);
+  auto line_end = request.find("\r\n", key_pos);
+  REQUIRE(line_end != std::string::npos);
+  request.replace(key_pos, line_end - key_pos, "Sec-WebSocket-Key: invalid");
+  REQUIRE(atria::platform::send_all(*conn, request).has_value());
+
+  std::string response = read_all(*conn);
+  CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
 }
 
 TEST_CASE("websocket rejects unsupported extensions", "[websocket]") {

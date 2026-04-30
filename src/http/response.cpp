@@ -78,10 +78,12 @@ Response Response::json(const Json& value, Status status) {
   return r;
 }
 
-Response Response::empty(Status status) { return Response{status}; }
+Response Response::empty(Status status) {
+  return Response{status};
+}
 
-Response Response::stream(ChunkProvider provider, std::optional<std::size_t> content_length,
-                           Status status) {
+Response
+Response::stream(ChunkProvider provider, std::optional<std::size_t> content_length, Status status) {
   Response r{status};
   r.chunk_provider_ = std::move(provider);
   r.content_length_ = content_length;
@@ -89,6 +91,26 @@ Response Response::stream(ChunkProvider provider, std::optional<std::size_t> con
     r.headers_.set("Content-Type", "application/octet-stream");
   }
   return r;
+}
+
+Response Response::stream_wakeable(
+    WakeableChunkProvider provider,
+    std::optional<std::size_t> content_length,
+    Status status
+) {
+  Response r{status};
+  r.wakeable_chunk_provider_ = std::move(provider);
+  r.content_length_ = content_length;
+  if (!has_header(r.headers_, "Content-Type")) {
+    r.headers_.set("Content-Type", "application/octet-stream");
+  }
+  return r;
+}
+
+void StreamWaker::wake() const {
+  if (wake_) {
+    wake_();
+  }
 }
 
 Response& Response::set_status(Status status) noexcept {

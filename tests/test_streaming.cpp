@@ -13,13 +13,13 @@
 #include "atria/status.hpp"
 #include "platform/socket.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
 #include <atomic>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,6 +43,19 @@ constexpr std::string_view kHost = "127.0.0.1";
       break;
     }
     out.append(buf.data(), *n);
+  }
+  return out;
+}
+
+[[nodiscard]] std::string read_until(atria::platform::SocketHandle& conn, std::string_view marker) {
+  std::string out;
+  std::array<char, 1024> buffer{};
+  while (out.find(marker) == std::string::npos) {
+    auto n = atria::platform::recv_some(conn, buffer.data(), buffer.size());
+    if (!n.has_value() || *n == 0) {
+      break;
+    }
+    out.append(buffer.data(), *n);
   }
   return out;
 }
@@ -142,12 +155,16 @@ TEST_CASE("server streams a chunked response over the wire", "[streaming][integr
 
   auto conn = atria::platform::connect_tcp(kHost, server.port);
   REQUIRE(conn.has_value());
-  REQUIRE(atria::platform::send_all(*conn,
-                                     std::string_view{"GET /big HTTP/1.1\r\n"
-                                                      "Host: 127.0.0.1\r\n"
-                                                      "Connection: close\r\n"
-                                                      "\r\n"})
-              .has_value());
+  REQUIRE(
+      atria::platform::send_all(
+          *conn,
+          std::string_view{"GET /big HTTP/1.1\r\n"
+                           "Host: 127.0.0.1\r\n"
+                           "Connection: close\r\n"
+                           "\r\n"}
+      )
+          .has_value()
+  );
   std::string raw = drain(*conn);
 
   CHECK(raw.find("HTTP/1.1 200 OK\r\n") == 0);
@@ -204,12 +221,16 @@ TEST_CASE("server streams with Content-Length when known", "[streaming][integrat
 
   auto conn = atria::platform::connect_tcp(kHost, server.port);
   REQUIRE(conn.has_value());
-  REQUIRE(atria::platform::send_all(*conn,
-                                     std::string_view{"GET /sized HTTP/1.1\r\n"
-                                                      "Host: 127.0.0.1\r\n"
-                                                      "Connection: close\r\n"
-                                                      "\r\n"})
-              .has_value());
+  REQUIRE(
+      atria::platform::send_all(
+          *conn,
+          std::string_view{"GET /sized HTTP/1.1\r\n"
+                           "Host: 127.0.0.1\r\n"
+                           "Connection: close\r\n"
+                           "\r\n"}
+      )
+          .has_value()
+  );
   std::string raw = drain(*conn);
 
   CHECK(raw.find("Content-Length: 12") != std::string::npos);
@@ -250,12 +271,16 @@ TEST_CASE("server streams empty body cleanly", "[streaming][integration]") {
 
   auto conn = atria::platform::connect_tcp(kHost, server.port);
   REQUIRE(conn.has_value());
-  REQUIRE(atria::platform::send_all(*conn,
-                                     std::string_view{"GET /empty HTTP/1.1\r\n"
-                                                      "Host: 127.0.0.1\r\n"
-                                                      "Connection: close\r\n"
-                                                      "\r\n"})
-              .has_value());
+  REQUIRE(
+      atria::platform::send_all(
+          *conn,
+          std::string_view{"GET /empty HTTP/1.1\r\n"
+                           "Host: 127.0.0.1\r\n"
+                           "Connection: close\r\n"
+                           "\r\n"}
+      )
+          .has_value()
+  );
   std::string raw = drain(*conn);
   CHECK(raw.find("HTTP/1.1 200 OK\r\n") == 0);
   CHECK(raw.find("Transfer-Encoding: chunked") != std::string::npos);
@@ -264,4 +289,105 @@ TEST_CASE("server streams empty body cleanly", "[streaming][integration]") {
   REQUIRE(body_pos != std::string::npos);
   std::string body = raw.substr(body_pos + 4);
   CHECK(body == "0\r\n\r\n");
+}
+
+TEST_CASE("wakeable stream resumes when producer wakes the loop", "[streaming][integration]") {
+  struct State {
+    std::mutex mu;
+    std::vector<std::string> chunks;
+    std::optional<atria::StreamWaker> waker;
+    bool done{false};
+  };
+
+  auto state = std::make_shared<State>();
+  atria::Application app;
+  app.get("/events", [state](atria::Request&) {
+    auto provider = [state](atria::StreamWaker& waker) -> std::optional<std::string> {
+      std::lock_guard<std::mutex> lock(state->mu);
+      state->waker = waker;
+      if (!state->chunks.empty()) {
+        std::string next = std::move(state->chunks.front());
+        state->chunks.erase(state->chunks.begin());
+        return next;
+      }
+      if (state->done) {
+        return std::string{};
+      }
+      return std::nullopt;
+    };
+    auto response = Response::stream_wakeable(provider);
+    response.set_header("Content-Type", "text/event-stream");
+    return response;
+  });
+
+  RunningServer server;
+  server.port = pick_port();
+  REQUIRE(server.port != 0);
+  server.thread = std::thread{[&] {
+    atria::ServerConfig cfg;
+    cfg.host = std::string{kHost};
+    cfg.port = server.port;
+    cfg.worker_threads = 0;
+    app.listen(cfg);
+  }};
+  server.app = &app;
+
+  for (int i = 0; i < 100; ++i) {
+    auto c = atria::platform::connect_tcp(kHost, server.port);
+    if (c.has_value()) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  }
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(
+          *conn,
+          std::string_view{"GET /events HTTP/1.1\r\n"
+                           "Host: 127.0.0.1\r\n"
+                           "Connection: close\r\n"
+                           "\r\n"}
+      )
+          .has_value()
+  );
+
+  std::string raw = read_until(*conn, "\r\n\r\n");
+  CHECK(raw.find("HTTP/1.1 200 OK\r\n") == 0);
+  CHECK(raw.find("Transfer-Encoding: chunked") != std::string::npos);
+  CHECK(raw.find("Content-Type: text/event-stream") != std::string::npos);
+
+  for (int i = 0; i < 100; ++i) {
+    {
+      std::lock_guard<std::mutex> lock(state->mu);
+      if (state->waker.has_value()) {
+        break;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  }
+
+  atria::StreamWaker waker;
+  {
+    std::lock_guard<std::mutex> lock(state->mu);
+    REQUIRE(state->waker.has_value());
+    state->chunks.push_back("data: one\n\n");
+    waker = *state->waker;
+  }
+  waker.wake();
+
+  raw.append(read_until(*conn, "data: one\n\n"));
+  CHECK(raw.find("b\r\ndata: one\n\n\r\n") != std::string::npos);
+
+  {
+    std::lock_guard<std::mutex> lock(state->mu);
+    state->done = true;
+    waker = *state->waker;
+  }
+  waker.wake();
+
+  raw.append(read_until(*conn, "0\r\n\r\n"));
+  CHECK(raw.find("0\r\n\r\n") != std::string::npos);
 }

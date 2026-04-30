@@ -12,6 +12,10 @@
 
 namespace atria {
 
+namespace net {
+class Connection;
+}
+
 class Json;
 
 // Pull-based chunk source for streaming responses. The runtime calls the provider on the
@@ -28,8 +32,27 @@ class Json;
 // the provider drain that queue.
 using ChunkProvider = std::function<std::optional<std::string>()>;
 
+class StreamWaker {
+public:
+  StreamWaker() = default;
+
+  void wake() const;
+
+private:
+  friend class net::Connection;
+
+  explicit StreamWaker(std::function<void()> wake) : wake_(std::move(wake)) {}
+
+  std::function<void()> wake_;
+};
+
+// Wakeable streams are for SSE-style producers where data may arrive from another
+// thread. Returning std::nullopt means "no data yet"; call StreamWaker::wake() when data
+// is available. Returning an empty string ends the stream.
+using WakeableChunkProvider = std::function<std::optional<std::string>(StreamWaker&)>;
+
 class Response {
- public:
+public:
   Response() = default;
   explicit Response(Status status, std::string body = {});
 
@@ -40,16 +63,34 @@ class Response {
   // Streaming factory. The body is produced lazily by `provider`. If `content_length` is
   // supplied, the response uses Content-Length framing; otherwise the runtime selects
   // Transfer-Encoding: chunked for HTTP/1.1 clients (and Connection: close for HTTP/1.0).
-  static Response stream(ChunkProvider provider,
-                          std::optional<std::size_t> content_length = std::nullopt,
-                          Status status = Status::Ok);
+  static Response stream(
+      ChunkProvider provider,
+      std::optional<std::size_t> content_length = std::nullopt,
+      Status status = Status::Ok
+  );
+
+  static Response stream_wakeable(
+      WakeableChunkProvider provider,
+      std::optional<std::size_t> content_length = std::nullopt,
+      Status status = Status::Ok
+  );
 
   [[nodiscard]] Status status() const noexcept { return status_; }
+
   [[nodiscard]] const Headers& headers() const noexcept { return headers_; }
+
   [[nodiscard]] Headers& headers() noexcept { return headers_; }
+
   [[nodiscard]] const std::string& body() const noexcept { return body_; }
 
-  [[nodiscard]] bool is_streaming() const noexcept { return static_cast<bool>(chunk_provider_); }
+  [[nodiscard]] bool is_streaming() const noexcept {
+    return static_cast<bool>(chunk_provider_) || static_cast<bool>(wakeable_chunk_provider_);
+  }
+
+  [[nodiscard]] bool is_wakeable_streaming() const noexcept {
+    return static_cast<bool>(wakeable_chunk_provider_);
+  }
+
   [[nodiscard]] std::optional<std::size_t> content_length() const noexcept {
     return content_length_;
   }
@@ -57,6 +98,10 @@ class Response {
   // Hand the provider over to the runtime; subsequent calls return an empty function.
   [[nodiscard]] ChunkProvider take_chunk_provider() noexcept {
     return std::exchange(chunk_provider_, ChunkProvider{});
+  }
+
+  [[nodiscard]] WakeableChunkProvider take_wakeable_chunk_provider() noexcept {
+    return std::exchange(wakeable_chunk_provider_, WakeableChunkProvider{});
   }
 
   Response& set_status(Status status) noexcept;
@@ -72,12 +117,13 @@ class Response {
   // a streaming response is being sent: write the headers, then loop pulling chunks.
   [[nodiscard]] std::string serialize_headers() const;
 
- private:
+private:
   Status status_{Status::Ok};
   Headers headers_;
   std::string body_;
 
   ChunkProvider chunk_provider_;
+  WakeableChunkProvider wakeable_chunk_provider_;
   std::optional<std::size_t> content_length_;
 };
 

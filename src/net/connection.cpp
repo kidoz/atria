@@ -152,12 +152,14 @@ Connection::Connection(
     platform::SocketHandle socket,
     Application& app,
     const ServerConfig& config,
-    DispatchHook dispatch_hook
+    DispatchHook dispatch_hook,
+    LoopTaskHook loop_task_hook
 )
     : socket_(std::move(socket)),
       app_(app),
       config_(config),
       dispatch_hook_(std::move(dispatch_hook)),
+      loop_task_hook_(std::move(loop_task_hook)),
       limits_(parse_limits_from(config)),
       current_timeout_(std::chrono::milliseconds{config.read_timeout_ms}) {}
 
@@ -182,8 +184,16 @@ void Connection::mark_closing() noexcept {
 }
 
 bool Connection::wants_write() const noexcept {
-  return state_ == ConnectionState::WebSocket &&
-         (!write_buffer_.empty() || !websocket_outbox_.empty());
+  if (state_ == ConnectionState::Writing) {
+    if (write_offset_ < write_buffer_.size()) {
+      return true;
+    }
+    return stream_mode_ != StreamMode::None && !stream_finished_ && !stream_waiting_for_wake_;
+  }
+  if (state_ == ConnectionState::WebSocket) {
+    return !write_buffer_.empty() || !websocket_outbox_.empty();
+  }
+  return false;
 }
 
 void Connection::on_readable() {
@@ -279,6 +289,18 @@ void Connection::on_dispatch_complete(Response response) {
   start_writing(std::move(response), keep_alive_after_response_, last_request_version_);
 }
 
+void Connection::on_stream_wake() {
+  if (state_ != ConnectionState::Writing || stream_mode_ == StreamMode::None || stream_finished_) {
+    return;
+  }
+  stream_waiting_for_wake_ = false;
+  if (write_offset_ >= write_buffer_.size()) {
+    write_buffer_.clear();
+    write_offset_ = 0;
+    pull_next_chunk();
+  }
+}
+
 void Connection::prepare_response_headers(Response& response, bool keep_alive, StreamMode mode) {
   if (mode != StreamMode::None) {
     // Strip any user-set framing headers; the runtime owns framing decisions.
@@ -322,12 +344,18 @@ void Connection::start_writing(Response response, bool keep_alive, HttpVersion v
       mode = StreamMode::RawClosing;
     }
     chunk_provider_ = response.take_chunk_provider();
+    wakeable_chunk_provider_ = response.take_wakeable_chunk_provider();
+    if (wakeable_chunk_provider_) {
+      install_stream_waker();
+    }
   } else {
     chunk_provider_ = ChunkProvider{};
+    wakeable_chunk_provider_ = WakeableChunkProvider{};
     stream_remaining_.reset();
   }
   stream_mode_ = mode;
   stream_finished_ = false;
+  stream_waiting_for_wake_ = false;
 
   prepare_response_headers(response, keep_alive, mode);
 
@@ -385,12 +413,27 @@ void Connection::emit_terminator_into_buffer() {
 }
 
 void Connection::pull_next_chunk() {
-  if (stream_finished_ || !chunk_provider_) {
+  if (stream_finished_ || (!chunk_provider_ && !wakeable_chunk_provider_)) {
     return;
   }
   while (true) {
-    std::optional<std::string> next = chunk_provider_();
-    if (!next.has_value() || next->empty()) {
+    std::optional<std::string> next;
+    if (wakeable_chunk_provider_) {
+      next = wakeable_chunk_provider_(stream_waker_);
+      if (!next.has_value()) {
+        stream_waiting_for_wake_ = true;
+        return;
+      }
+    } else {
+      next = chunk_provider_();
+      if (!next.has_value()) {
+        stream_finished_ = true;
+        emit_terminator_into_buffer();
+        return;
+      }
+    }
+    stream_waiting_for_wake_ = false;
+    if (next->empty()) {
       stream_finished_ = true;
       emit_terminator_into_buffer();
       return;
@@ -471,9 +514,12 @@ void Connection::finish_write() {
   write_buffer_.clear();
   write_offset_ = 0;
   chunk_provider_ = ChunkProvider{};
+  wakeable_chunk_provider_ = WakeableChunkProvider{};
+  stream_waker_ = StreamWaker{};
   stream_mode_ = StreamMode::None;
   stream_remaining_.reset();
   stream_finished_ = false;
+  stream_waiting_for_wake_ = false;
   state_ = ConnectionState::Reading;
   current_timeout_ = std::chrono::milliseconds{config_.keep_alive_timeout_ms};
   last_activity_ = Clock::now();
@@ -522,15 +568,34 @@ void Connection::start_websocket(Request request) {
   websocket_request_ = std::move(request);
   websocket_session_ = WebSocketSession{};
   websocket_session_.set_request(&*websocket_request_);
-  websocket_session_.set_text_sender([this](std::string message) {
-    queue_websocket_frame(websocket::Opcode::Text, message);
+  std::weak_ptr<Connection> weak = shared_from_this();
+  auto post = loop_task_hook_;
+  auto post_to_connection = [weak, post](ConnectionTask task) {
+    if (post) {
+      post(weak, std::move(task));
+      return;
+    }
+    if (auto connection = weak.lock()) {
+      task(*connection);
+    }
+  };
+  websocket_session_.set_text_sender([post_to_connection](std::string message) {
+    post_to_connection([message = std::move(message)](Connection& connection) {
+      connection.queue_websocket_frame(websocket::Opcode::Text, message);
+    });
   });
-  websocket_session_.set_binary_sender([this](std::string message) {
-    queue_websocket_frame(websocket::Opcode::Binary, message);
+  websocket_session_.set_binary_sender([post_to_connection](std::string message) {
+    post_to_connection([message = std::move(message)](Connection& connection) {
+      connection.queue_websocket_frame(websocket::Opcode::Binary, message);
+    });
   });
-  websocket_session_.set_close_sender([this](WebSocketCloseCode code, std::string reason) {
-    queue_websocket_close(code, reason);
-  });
+  websocket_session_.set_close_sender(
+      [post_to_connection](WebSocketCloseCode code, std::string reason) {
+        post_to_connection([code, reason = std::move(reason)](Connection& connection) {
+          connection.queue_websocket_close(code, reason);
+        });
+      }
+  );
 
   if (!app_.dispatch_websocket(*websocket_request_, websocket_session_)) {
     websocket_request_.reset();
@@ -726,6 +791,29 @@ void Connection::flush_websocket_output() {
     write_offset_ += *sent;
     last_activity_ = Clock::now();
   }
+}
+
+void Connection::install_stream_waker() {
+  std::weak_ptr<Connection> weak = shared_from_this();
+  auto post = loop_task_hook_;
+  stream_waker_ = StreamWaker{[weak, post]() {
+    auto task = [](Connection& connection) { connection.on_stream_wake(); };
+    if (post) {
+      post(weak, std::move(task));
+      return;
+    }
+    if (auto connection = weak.lock()) {
+      task(*connection);
+    }
+  }};
+}
+
+void Connection::post_loop_task(ConnectionTask task) {
+  if (loop_task_hook_) {
+    loop_task_hook_(weak_from_this(), std::move(task));
+    return;
+  }
+  task(*this);
 }
 
 }  // namespace atria::net

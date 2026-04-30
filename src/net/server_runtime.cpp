@@ -7,8 +7,8 @@
 //     requests are submitted to the pool; the worker thread runs `Application::dispatch`
 //     and pushes the resulting Response onto a completion queue.
 //   * A Notifier (pipe on POSIX / TCP loopback pair on Windows) wakes the loop when a
-//     completion is available. The loop drains the queue and resumes each connection's
-//     state machine.
+//     completion, external WebSocket send, or wakeable stream signal is available. The
+//     loop drains queued work and resumes each connection's state machine.
 //
 // Handlers therefore run on the worker pool when one is configured; otherwise they run
 // synchronously on the loop thread (current behavior). Either way, all I/O — accept,
@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -54,6 +55,29 @@ namespace {
 struct Completion {
   std::shared_ptr<Connection> conn;
   Response response;
+};
+
+struct LoopTask {
+  std::weak_ptr<Connection> conn;
+  ConnectionTask task;
+};
+
+struct LoopSignal {
+  std::unique_ptr<Notifier> notifier;
+  std::mutex tasks_mu;
+  std::queue<LoopTask> tasks;
+  std::atomic<bool> accepting{true};
+
+  void post(std::weak_ptr<Connection> conn, ConnectionTask task) {
+    if (!accepting.load()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(tasks_mu);
+      tasks.push(LoopTask{std::move(conn), std::move(task)});
+    }
+    notifier->notify();
+  }
 };
 
 }  // namespace
@@ -88,19 +112,20 @@ int ServerRuntime::run(std::atomic<bool>& running) {
     return 1;
   }
 
+  auto loop_signal = std::make_shared<LoopSignal>();
+  loop_signal->notifier = Notifier::create();
+  if (!loop_signal->notifier) {
+    std::fprintf(stderr, "[atria] failed to create notifier\n");
+    return 1;
+  }
+
   // Optional worker pool. Zero = synchronous dispatch on the loop thread (current behavior).
   std::unique_ptr<WorkerPool> pool;
-  std::unique_ptr<Notifier> notifier;
   std::mutex completions_mu;
   std::queue<Completion> completions;
 
   if (config_.worker_threads > 0) {
     pool = std::make_unique<WorkerPool>(config_.worker_threads);
-    notifier = Notifier::create();
-    if (!notifier) {
-      std::fprintf(stderr, "[atria] failed to create notifier\n");
-      return 1;
-    }
   }
 
   std::unordered_map<platform::NativeSocket, std::shared_ptr<Connection>> conns;
@@ -128,7 +153,7 @@ int ServerRuntime::run(std::atomic<bool>& running) {
     case ConnectionState::Reading:
       return IoEvent::Read;
     case ConnectionState::Writing:
-      return IoEvent::Write;
+      return connection.wants_write() ? IoEvent::Write : IoEvent::None;
     case ConnectionState::WebSocket:
       return connection.wants_write() ? (IoEvent::Read | IoEvent::Write) : IoEvent::Read;
     case ConnectionState::Dispatching:
@@ -144,12 +169,12 @@ int ServerRuntime::run(std::atomic<bool>& running) {
   // notifier and drains.
   DispatchHook dispatch_hook;
   if (pool) {
-    dispatch_hook = [&app = app_, &pool, &notifier, &completions_mu, &completions](
+    dispatch_hook = [&app = app_, &pool, loop_signal, &completions_mu, &completions](
                         std::shared_ptr<Connection> conn,
                         Request request
                     ) {
       pool->submit([&app,
-                    &notifier,
+                    loop_signal,
                     &completions_mu,
                     &completions,
                     conn = std::move(conn),
@@ -159,10 +184,14 @@ int ServerRuntime::run(std::atomic<bool>& running) {
           std::lock_guard<std::mutex> lock(completions_mu);
           completions.push(Completion{std::move(conn), std::move(response)});
         }
-        notifier->notify();
+        loop_signal->notifier->notify();
       });
     };
   }
+
+  LoopTaskHook loop_task_hook = [loop_signal](std::weak_ptr<Connection> conn, ConnectionTask task) {
+    loop_signal->post(std::move(conn), std::move(task));
+  };
 
   auto on_listener_readable = [&](IoEvent /*ev*/) {
     while (true) {
@@ -188,7 +217,13 @@ int ServerRuntime::run(std::atomic<bool>& running) {
         continue;
       }
       auto fd = accepted->native();
-      auto conn = std::make_shared<Connection>(std::move(*accepted), app_, config_, dispatch_hook);
+      auto conn = std::make_shared<Connection>(
+          std::move(*accepted),
+          app_,
+          config_,
+          dispatch_hook,
+          loop_task_hook
+      );
       Connection* raw = conn.get();
       conns.emplace(fd, std::move(conn));
       peer_of.emplace(fd, peer_ip);
@@ -212,18 +247,20 @@ int ServerRuntime::run(std::atomic<bool>& running) {
 
   loop->watch(listener->handle().native(), IoEvent::Read, std::move(on_listener_readable));
 
-  // Notifier read end: drain bytes, then deliver pending completions on the loop thread.
-  if (notifier) {
-    auto drain_completions = [&](IoEvent /*ev*/) {
-      notifier->drain();
-      std::queue<Completion> pending;
+  // Notifier read end: drain bytes, then deliver pending completions and connection tasks
+  // on the loop thread.
+  {
+    auto drain_wakeups = [&, loop_signal](IoEvent /*ev*/) {
+      loop_signal->notifier->drain();
+
+      std::queue<Completion> pending_completions;
       {
         std::lock_guard<std::mutex> lock(completions_mu);
-        std::swap(pending, completions);
+        std::swap(pending_completions, completions);
       }
-      while (!pending.empty()) {
-        Completion c = std::move(pending.front());
-        pending.pop();
+      while (!pending_completions.empty()) {
+        Completion c = std::move(pending_completions.front());
+        pending_completions.pop();
         auto fd = c.conn->fd();
         auto it = conns.find(fd);
         if (it == conns.end() || it->second.get() != c.conn.get()) {
@@ -237,8 +274,33 @@ int ServerRuntime::run(std::atomic<bool>& running) {
         }
         loop->modify(fd, connection_io_mask(*c.conn));
       }
+
+      std::queue<LoopTask> pending_tasks;
+      {
+        std::lock_guard<std::mutex> lock(loop_signal->tasks_mu);
+        std::swap(pending_tasks, loop_signal->tasks);
+      }
+      while (!pending_tasks.empty()) {
+        LoopTask queued = std::move(pending_tasks.front());
+        pending_tasks.pop();
+        auto conn = queued.conn.lock();
+        if (!conn) {
+          continue;
+        }
+        auto fd = conn->fd();
+        auto it = conns.find(fd);
+        if (it == conns.end() || it->second.get() != conn.get()) {
+          continue;
+        }
+        queued.task(*conn);
+        if (conn->is_closing()) {
+          remove_connection(fd);
+          continue;
+        }
+        loop->modify(fd, connection_io_mask(*conn));
+      }
     };
-    loop->watch(notifier->read_fd(), IoEvent::Read, std::move(drain_completions));
+    loop->watch(loop_signal->notifier->read_fd(), IoEvent::Read, std::move(drain_wakeups));
   }
 
   running.store(true);
@@ -270,13 +332,12 @@ int ServerRuntime::run(std::atomic<bool>& running) {
   while (!conns.empty() && Clock::now() < deadline) {
     loop->run_once(50);
   }
-  if (notifier) {
-    loop->unwatch(notifier->read_fd());
-  }
+  loop_signal->accepting.store(false);
+  loop->unwatch(loop_signal->notifier->read_fd());
   conns.clear();
-  // Worker pool is destroyed here (via unique_ptr dtor) after the conns map is empty,
-  // so any in-flight workers race-free deliver into a queue we no longer drain — that's
-  // safe because Connection refs in the queue are released when the queue dies.
+  // Join workers while completion queues and the notifier state are still alive.
+  pool.reset();
+  // Any late completions now only release Connection refs when the queue dies.
   return 0;
 }
 

@@ -47,6 +47,8 @@ enum class ConnectionState : std::uint8_t {
 // completion queue. If no hook is provided (i.e. worker pool is disabled), the connection
 // runs the handler synchronously on the loop thread.
 using DispatchHook = std::function<void(std::shared_ptr<Connection> conn, Request request)>;
+using ConnectionTask = std::function<void(Connection&)>;
+using LoopTaskHook = std::function<void(std::weak_ptr<Connection> conn, ConnectionTask task)>;
 
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
@@ -56,7 +58,8 @@ public:
       platform::SocketHandle socket,
       Application& app,
       const ServerConfig& config,
-      DispatchHook dispatch_hook
+      DispatchHook dispatch_hook,
+      LoopTaskHook loop_task_hook
   );
   ~Connection() = default;
   Connection(const Connection&) = delete;
@@ -79,6 +82,7 @@ public:
 
   // Called on the loop thread when a worker thread has finished executing the handler.
   void on_dispatch_complete(Response response);
+  void on_stream_wake();
 
   void mark_closing() noexcept;
 
@@ -105,11 +109,14 @@ private:
   void queue_websocket_frame(websocket::Opcode opcode, std::string_view payload);
   void queue_websocket_close(WebSocketCloseCode code, std::string_view reason);
   void flush_websocket_output();
+  void install_stream_waker();
+  void post_loop_task(ConnectionTask task);
 
   platform::SocketHandle socket_;
   Application& app_;
   const ServerConfig& config_;
   DispatchHook dispatch_hook_;
+  LoopTaskHook loop_task_hook_;
   ParseLimits limits_;
 
   std::string read_buffer_;
@@ -132,9 +139,12 @@ private:
   // Streaming-response state. When chunk_provider_ is set, the runtime pulls more bytes
   // each time write_buffer_ drains.
   ChunkProvider chunk_provider_;
+  WakeableChunkProvider wakeable_chunk_provider_;
+  StreamWaker stream_waker_;
   StreamMode stream_mode_{StreamMode::None};
   std::optional<std::size_t> stream_remaining_;  // for RawCounted: bytes left to emit
   bool stream_finished_{false};                  // EOS reached and terminator (if any) queued
+  bool stream_waiting_for_wake_{false};
 
   std::optional<Request> websocket_request_;
   WebSocketSession websocket_session_;
