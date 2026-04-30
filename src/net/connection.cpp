@@ -174,6 +174,113 @@ header_contains_token(const Request& req, std::string_view name, std::string_vie
   });
 }
 
+void trim_ows(std::string_view& value) noexcept {
+  while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+    value.remove_suffix(1);
+  }
+}
+
+[[nodiscard]] bool is_valid_websocket_extension_token(std::string_view token) noexcept {
+  return is_valid_websocket_subprotocol(token);
+}
+
+[[nodiscard]] bool is_valid_quoted_websocket_extension_value(std::string_view value) noexcept {
+  if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+    return false;
+  }
+  value.remove_prefix(1);
+  value.remove_suffix(1);
+  bool escaped = false;
+  for (char raw_character : value) {
+    auto character = static_cast<unsigned char>(raw_character);
+    if (escaped) {
+      escaped = false;
+    } else if (character == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character < 0x20U || character == 0x7FU) {
+      return false;
+    }
+  }
+  return !escaped;
+}
+
+[[nodiscard]] bool is_valid_websocket_extension_parameter(std::string_view parameter) {
+  trim_ows(parameter);
+  if (parameter.empty()) {
+    return false;
+  }
+  auto equals = parameter.find('=');
+  auto name = parameter.substr(0, equals);
+  trim_ows(name);
+  if (!is_valid_websocket_extension_token(name)) {
+    return false;
+  }
+  if (equals == std::string_view::npos) {
+    return true;
+  }
+  auto value = parameter.substr(equals + 1);
+  trim_ows(value);
+  return is_valid_websocket_extension_token(value) ||
+         is_valid_quoted_websocket_extension_value(value);
+}
+
+[[nodiscard]] std::string_view
+validate_websocket_extension_offer(std::string_view header, const ServerConfig& config) {
+  trim_ows(header);
+  if (header.empty()) {
+    return "invalid websocket extension offer";
+  }
+
+  std::size_t extension_count = 0;
+  std::size_t cursor = 0;
+  while (cursor < header.size()) {
+    auto comma = header.find(',', cursor);
+    if (comma == std::string_view::npos) {
+      comma = header.size();
+    }
+    auto extension = header.substr(cursor, comma - cursor);
+    trim_ows(extension);
+    if (extension.empty()) {
+      return "invalid websocket extension offer";
+    }
+    if (extension_count >= config.max_websocket_extension_count) {
+      return "too many websocket extension offers";
+    }
+    ++extension_count;
+
+    auto semicolon = extension.find(';');
+    auto token = extension.substr(0, semicolon);
+    trim_ows(token);
+    if (!is_valid_websocket_extension_token(token)) {
+      return "invalid websocket extension offer";
+    }
+
+    std::size_t parameter_count = 0;
+    while (semicolon != std::string_view::npos) {
+      auto next = extension.find(';', semicolon + 1);
+      auto parameter = extension.substr(
+          semicolon + 1,
+          next == std::string_view::npos ? std::string_view::npos : next - semicolon - 1
+      );
+      if (parameter_count >= config.max_websocket_extension_parameter_count) {
+        return "too many websocket extension parameters";
+      }
+      ++parameter_count;
+      if (!is_valid_websocket_extension_parameter(parameter)) {
+        return "invalid websocket extension offer";
+      }
+      semicolon = next;
+    }
+    cursor = comma + 1;
+  }
+  return {};
+}
+
 [[nodiscard]] std::optional<std::vector<std::string>>
 requested_websocket_subprotocols(const Request& request) {
   auto header = request.header("Sec-WebSocket-Protocol");
@@ -649,13 +756,25 @@ void Connection::start_websocket(Request request) {
     );
     return;
   }
-  if (request.header("Sec-WebSocket-Extensions").has_value()) {
-    start_writing(
-        error_response(Status::BadRequest, "websocket extensions are not supported"),
-        /*keep_alive=*/false,
-        HttpVersion::Http11
-    );
-    return;
+  auto extensions = request.header("Sec-WebSocket-Extensions");
+  if (extensions.has_value()) {
+    auto validation_error = validate_websocket_extension_offer(*extensions, config_);
+    if (!validation_error.empty()) {
+      start_writing(
+          error_response(Status::BadRequest, validation_error),
+          /*keep_alive=*/false,
+          HttpVersion::Http11
+      );
+      return;
+    }
+    if (config_.websocket_extension_policy == WebSocketExtensionPolicy::Reject) {
+      start_writing(
+          error_response(Status::BadRequest, "websocket extensions are disabled"),
+          /*keep_alive=*/false,
+          HttpVersion::Http11
+      );
+      return;
+    }
   }
   auto key = request.header("Sec-WebSocket-Key");
   if (!key.has_value()) {

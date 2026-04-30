@@ -754,11 +754,112 @@ TEST_CASE("websocket rejects unsupported extensions", "[websocket]") {
   REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
 
   std::string request = websocket_handshake();
-  request.insert(request.find("\r\n\r\n"), "Sec-WebSocket-Extensions: permessage-deflate\r\n");
+  request.insert(request.find("\r\n\r\n"), "\r\nSec-WebSocket-Extensions: permessage-deflate");
   REQUIRE(atria::platform::send_all(*conn, request).has_value());
 
   std::string response = read_all(*conn);
   CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+  CHECK(response.find("websocket extensions are disabled") != std::string::npos);
+}
+
+TEST_CASE("websocket rejects malformed extension offers", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+
+  std::string request = websocket_handshake();
+  request.insert(
+      request.find("\r\n\r\n"),
+      "\r\nSec-WebSocket-Extensions: permessage-deflate; =bad"
+  );
+  REQUIRE(atria::platform::send_all(*conn, request).has_value());
+
+  std::string response = read_all(*conn);
+  CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+  CHECK(response.find("invalid websocket extension offer") != std::string::npos);
+}
+
+TEST_CASE("websocket rejects extension offers beyond configured limit", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& config) {
+    config.max_websocket_extension_count = 1;
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+
+  std::string request = websocket_handshake();
+  request.insert(
+      request.find("\r\n\r\n"),
+      "\r\nSec-WebSocket-Extensions: permessage-deflate, x-test-extension"
+  );
+  REQUIRE(atria::platform::send_all(*conn, request).has_value());
+
+  std::string response = read_all(*conn);
+  CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+  CHECK(response.find("too many websocket extension offers") != std::string::npos);
+}
+
+TEST_CASE("websocket can ignore extension offers by policy", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& config) {
+    config.websocket_extension_policy = atria::WebSocketExtensionPolicy::Ignore;
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+
+  std::string request = websocket_handshake();
+  request.insert(
+      request.find("\r\n\r\n"),
+      "\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits"
+  );
+  REQUIRE(atria::platform::send_all(*conn, request).has_value());
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+  CHECK(!response.contains("Sec-WebSocket-Extensions:"));
+}
+
+TEST_CASE("websocket rejects reserved bits after ignored extension offers", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app, [](atria::ServerConfig& config) {
+    config.websocket_extension_policy = atria::WebSocketExtensionPolicy::Ignore;
+  });
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+
+  std::string request = websocket_handshake();
+  request.insert(request.find("\r\n\r\n"), "\r\nSec-WebSocket-Extensions: permessage-deflate");
+  REQUIRE(atria::platform::send_all(*conn, request).has_value());
+  std::string response = read_until(*conn, "\r\n\r\n");
+  REQUIRE(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+
+  std::string frame = masked_client_frame(0x1, "compressed?");
+  frame.front() = static_cast<char>(static_cast<unsigned char>(frame.front()) | 0x40U);
+  REQUIRE(atria::platform::send_all(*conn, frame).has_value());
+
+  auto close = read_server_frame(*conn);
+  CHECK(close_code(close) == 1002);
 }
 
 TEST_CASE("websocket rejects invalid utf-8 in text frames", "[websocket]") {

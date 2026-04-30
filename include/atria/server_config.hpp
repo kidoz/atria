@@ -7,6 +7,11 @@
 
 namespace atria {
 
+enum class WebSocketExtensionPolicy : std::uint8_t {
+  Reject,
+  Ignore,
+};
+
 struct ServerConfig {
   std::string host{"127.0.0.1"};
   std::uint16_t port{8080};
@@ -38,6 +43,13 @@ struct ServerConfig {
   std::size_t max_websocket_message_bytes{std::size_t{1024} * 1024};
   std::size_t max_websocket_queue_bytes{std::size_t{1024} * 1024};
   std::uint32_t websocket_idle_timeout_ms{60000};
+  std::size_t max_websocket_extension_count{8};
+  std::size_t max_websocket_extension_parameter_count{16};
+
+  // Atria does not implement WebSocket extensions such as permessage-deflate. Reject is
+  // the safest default. Ignore is useful behind clients/proxies that offer extensions but
+  // tolerate a 101 response without Sec-WebSocket-Extensions; RSV frames are still rejected.
+  WebSocketExtensionPolicy websocket_extension_policy{WebSocketExtensionPolicy::Reject};
 
   // Optional browser Origin policy for WebSocket upgrades.
   // Empty allowlist + require=false preserves current behavior: all origins and missing
