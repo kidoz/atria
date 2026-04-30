@@ -231,3 +231,71 @@ TEST_CASE("schema_for primitive specializations are correct", "[openapi]") {
   CHECK(schema_for<double>::get().find("type")->as_string() == "number");
   CHECK(schema_for<std::string>::get().find("type")->as_string() == "string");
 }
+
+TEST_CASE("schema_builder derives field types from pointer-to-member", "[openapi][builder]") {
+  using atria::openapi::field_options;
+  using atria::openapi::schema_builder;
+
+  Json schema = schema_builder<CreateItemDto>{}
+                    .field<&CreateItemDto::name>("name", field_options{.required = true})
+                    .field<&CreateItemDto::completed>("completed")
+                    .build();
+
+  REQUIRE(schema.is_object());
+  CHECK(schema.find("type")->as_string() == "object");
+
+  const auto* properties = schema.find("properties");
+  REQUIRE(properties != nullptr);
+  CHECK(properties->find("name")->find("type")->as_string() == "string");
+  CHECK(properties->find("completed")->find("type")->as_string() == "boolean");
+
+  const auto* required_array = schema.find("required");
+  REQUIRE(required_array != nullptr);
+  REQUIRE(required_array->is_array());
+  REQUIRE(required_array->as_array().size() == 1);
+  CHECK(required_array->as_array().at(0).as_string() == "name");
+}
+
+TEST_CASE("schema_builder unwraps std::optional members", "[openapi][builder]") {
+  struct WithOptional {
+    std::optional<std::string> nickname;
+    std::int64_t id{};
+  };
+
+  Json schema = atria::openapi::schema_builder<WithOptional>{}
+                    .field<&WithOptional::id>("id", atria::openapi::field_options{.required = true})
+                    .field<&WithOptional::nickname>("nickname")
+                    .build();
+
+  const auto* properties = schema.find("properties");
+  REQUIRE(properties != nullptr);
+  CHECK(properties->find("id")->find("type")->as_string() == "integer");
+  CHECK(properties->find("nickname")->find("type")->as_string() == "string");
+  REQUIRE(schema.find("required") != nullptr);
+  CHECK(schema.find("required")->as_array().size() == 1);
+}
+
+TEST_CASE("schema_builder description and override_property", "[openapi][builder]") {
+  struct Tagged {
+    std::string color;
+  };
+
+  Json schema =
+      atria::openapi::schema_builder<Tagged>{}
+          .description("A tagged value")
+          .field<&Tagged::color>("color", atria::openapi::field_options{.required = true})
+          .override_property("color", atria::Json::object({
+                                          {"type", std::string{"string"}},
+                                          {"enum",
+                                           atria::Json::array({atria::Json{"red"},
+                                                                atria::Json{"green"},
+                                                                atria::Json{"blue"}})},
+                                      }))
+          .build();
+
+  CHECK(schema.find("description")->as_string() == "A tagged value");
+  const auto* color = schema.find("properties")->find("color");
+  REQUIRE(color != nullptr);
+  REQUIRE(color->find("enum") != nullptr);
+  CHECK(color->find("enum")->as_array().size() == 3);
+}
