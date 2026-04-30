@@ -1,7 +1,5 @@
 #include "platform/socket.hpp"
 
-#include <ws2tcpip.h>
-
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <ws2tcpip.h>
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -22,15 +21,15 @@ bool g_initialized = false;
 
 [[nodiscard]] SocketErrorKind classify(int err) noexcept {
   switch (err) {
-    case WSAEWOULDBLOCK:
-      return SocketErrorKind::WouldBlock;
-    case WSAETIMEDOUT:
-      return SocketErrorKind::Timeout;
-    case WSAECONNRESET:
-    case WSAECONNABORTED:
-      return SocketErrorKind::ConnectionReset;
-    default:
-      return SocketErrorKind::Other;
+  case WSAEWOULDBLOCK:
+    return SocketErrorKind::WouldBlock;
+  case WSAETIMEDOUT:
+    return SocketErrorKind::Timeout;
+  case WSAECONNRESET:
+  case WSAECONNABORTED:
+    return SocketErrorKind::ConnectionReset;
+  default:
+    return SocketErrorKind::Other;
   }
 }
 
@@ -66,8 +65,8 @@ void SocketHandle::close() noexcept {
   }
 }
 
-std::expected<SocketHandle, SocketError> listen_tcp(std::string_view host, std::uint16_t port,
-                                                    int backlog) {
+std::expected<SocketHandle, SocketError>
+listen_tcp(std::string_view host, std::uint16_t port, int backlog) {
   global_init();
   SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd == INVALID_SOCKET) {
@@ -99,6 +98,15 @@ std::expected<SocketHandle, SocketError> listen_tcp(std::string_view host, std::
     return std::unexpected(last_wsa_error("listen"));
   }
   return sock;
+}
+
+std::expected<std::uint16_t, SocketError> local_port(SocketHandle& sock) {
+  sockaddr_in addr{};
+  int addr_len = sizeof(addr);
+  if (::getsockname(sock.native(), reinterpret_cast<sockaddr*>(&addr), &addr_len) == SOCKET_ERROR) {
+    return std::unexpected(last_wsa_error("getsockname"));
+  }
+  return ntohs(addr.sin_port);
 }
 
 std::expected<SocketHandle, SocketError> connect_tcp(std::string_view host, std::uint16_t port) {
@@ -134,12 +142,12 @@ std::expected<SocketHandle, SocketError> accept_connection(SocketHandle& listene
   return SocketHandle{fd};
 }
 
-std::expected<SocketHandle, SocketError> accept_connection_with_peer(SocketHandle& listener,
-                                                                      std::string& peer_ip) {
+std::expected<SocketHandle, SocketError>
+accept_connection_with_peer(SocketHandle& listener, std::string& peer_ip) {
   sockaddr_storage peer_addr{};
   int peer_addr_len = sizeof(peer_addr);
-  SOCKET accepted_socket = ::accept(listener.native(), reinterpret_cast<sockaddr*>(&peer_addr),
-                                     &peer_addr_len);
+  SOCKET accepted_socket =
+      ::accept(listener.native(), reinterpret_cast<sockaddr*>(&peer_addr), &peer_addr_len);
   if (accepted_socket == INVALID_SOCKET) {
     return std::unexpected(last_wsa_error("accept"));
   }
@@ -187,21 +195,29 @@ std::expected<std::size_t, SocketError> send_some(SocketHandle& sock, std::strin
   return static_cast<std::size_t>(n);
 }
 
-std::expected<void, SocketError> set_recv_timeout(SocketHandle& sock,
-                                                  std::uint32_t milliseconds) {
+std::expected<void, SocketError> set_recv_timeout(SocketHandle& sock, std::uint32_t milliseconds) {
   DWORD ms = milliseconds;
-  if (::setsockopt(sock.native(), SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char*>(&ms), sizeof(ms)) == SOCKET_ERROR) {
+  if (::setsockopt(
+          sock.native(),
+          SOL_SOCKET,
+          SO_RCVTIMEO,
+          reinterpret_cast<const char*>(&ms),
+          sizeof(ms)
+      ) == SOCKET_ERROR) {
     return std::unexpected(last_wsa_error("setsockopt(SO_RCVTIMEO)"));
   }
   return {};
 }
 
-std::expected<void, SocketError> set_send_timeout(SocketHandle& sock,
-                                                  std::uint32_t milliseconds) {
+std::expected<void, SocketError> set_send_timeout(SocketHandle& sock, std::uint32_t milliseconds) {
   DWORD ms = milliseconds;
-  if (::setsockopt(sock.native(), SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char*>(&ms), sizeof(ms)) == SOCKET_ERROR) {
+  if (::setsockopt(
+          sock.native(),
+          SOL_SOCKET,
+          SO_SNDTIMEO,
+          reinterpret_cast<const char*>(&ms),
+          sizeof(ms)
+      ) == SOCKET_ERROR) {
     return std::unexpected(last_wsa_error("setsockopt(SO_SNDTIMEO)"));
   }
   return {};

@@ -8,10 +8,9 @@
 #include "atria/status.hpp"
 #include "platform/socket.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
 #include <atomic>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -25,13 +24,12 @@ namespace {
 constexpr std::string_view kHost = "127.0.0.1";
 
 [[nodiscard]] std::uint16_t pick_port() {
-  for (std::uint16_t candidate = 19100; candidate < 19199; ++candidate) {
-    auto probe = atria::platform::listen_tcp(kHost, candidate, 4);
-    if (probe.has_value()) {
-      return candidate;
-    }
+  auto probe = atria::platform::listen_tcp(kHost, 0, 4);
+  if (!probe.has_value()) {
+    return 0;
   }
-  return 0;
+  auto port = atria::platform::local_port(*probe);
+  return port.value_or(0);
 }
 
 struct RunningServer {
@@ -102,8 +100,8 @@ TEST_CASE("server enforces max_connections_per_ip", "[limits]") {
   std::array<char, 256> read_buffer{};
   // Wait briefly for the server to close.
   std::this_thread::sleep_for(std::chrono::milliseconds{50});
-  auto recv_result = atria::platform::recv_some(*over_limit_connection, read_buffer.data(),
-                                                 read_buffer.size());
+  auto recv_result =
+      atria::platform::recv_some(*over_limit_connection, read_buffer.data(), read_buffer.size());
   // Either EOF (bytes==0) or error (peer closed) — both are acceptable.
   CHECK((!recv_result.has_value() || *recv_result == 0));
 }
@@ -133,16 +131,17 @@ TEST_CASE("server boots slowloris-style clients via header timeout", "[limits][s
   REQUIRE(slow_connection.has_value());
 
   // Send a partial request line — never the terminating \r\n\r\n.
-  REQUIRE(atria::platform::send_all(*slow_connection,
-                                     std::string_view{"GET / HTTP/1.1\r\nHost: x\r\n"})
-              .has_value());
+  REQUIRE(
+      atria::platform::send_all(*slow_connection, std::string_view{"GET / HTTP/1.1\r\nHost: x\r\n"})
+          .has_value()
+  );
 
   // Wait past the header deadline + the 200ms sweep cadence.
   std::this_thread::sleep_for(std::chrono::milliseconds{600});
 
   // The server should have closed the connection by now.
   std::array<char, 256> read_buffer{};
-  auto recv_result = atria::platform::recv_some(*slow_connection, read_buffer.data(),
-                                                 read_buffer.size());
+  auto recv_result =
+      atria::platform::recv_some(*slow_connection, read_buffer.data(), read_buffer.size());
   CHECK((!recv_result.has_value() || *recv_result == 0));
 }

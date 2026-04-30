@@ -1,7 +1,5 @@
 // Unit tests for net::WorkerPool and parallel-handler integration test.
 
-#include "net/worker_pool.hpp"
-
 #include "atria/application.hpp"
 #include "atria/json.hpp"
 #include "atria/middleware.hpp"
@@ -9,12 +7,12 @@
 #include "atria/response.hpp"
 #include "atria/server_config.hpp"
 #include "atria/status.hpp"
+#include "net/worker_pool.hpp"
 #include "platform/socket.hpp"
-
-#include <catch2/catch_test_macros.hpp>
 
 #include <array>
 #include <atomic>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -39,6 +37,15 @@ constexpr std::string_view kHost = "127.0.0.1";
     out.append(buf.data(), *n);
   }
   return out;
+}
+
+[[nodiscard]] std::uint16_t pick_port() {
+  auto probe = atria::platform::listen_tcp(kHost, 0, 4);
+  if (!probe.has_value()) {
+    return 0;
+  }
+  auto port = atria::platform::local_port(*probe);
+  return port.value_or(0);
 }
 
 }  // namespace
@@ -88,14 +95,7 @@ TEST_CASE("server dispatches handlers in parallel via worker pool", "[worker_poo
   });
 
   // Find a free port and start the server in a worker thread, with worker_threads = 4.
-  std::uint16_t port = 0;
-  for (std::uint16_t candidate = 18900; candidate < 18920; ++candidate) {
-    auto probe = atria::platform::listen_tcp(kHost, candidate, 4);
-    if (probe.has_value()) {
-      port = candidate;
-      break;
-    }
-  }
+  std::uint16_t port = pick_port();
   REQUIRE(port != 0);
 
   std::thread server_thread{[&app, port] {
@@ -121,11 +121,16 @@ TEST_CASE("server dispatches handlers in parallel via worker pool", "[worker_poo
     if (!conn.has_value()) {
       return std::string{};
     }
-    (void)atria::platform::send_all(*conn,
-                                     std::string_view{"GET /slow HTTP/1.1\r\n"
-                                                      "Host: 127.0.0.1\r\n"
-                                                      "Connection: close\r\n"
-                                                      "\r\n"});
+    auto sent = atria::platform::send_all(
+        *conn,
+        std::string_view{"GET /slow HTTP/1.1\r\n"
+                         "Host: 127.0.0.1\r\n"
+                         "Connection: close\r\n"
+                         "\r\n"}
+    );
+    if (!sent.has_value()) {
+      return std::string{};
+    }
     return drain(*conn);
   };
 

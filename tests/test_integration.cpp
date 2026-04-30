@@ -50,27 +50,28 @@ struct RunningServer {
 
 [[nodiscard]] std::uint16_t
 pick_free_port_and_listen(atria::Application& app, std::thread& thread) {
-  // Try a small range of high ports to dodge a busy CI runner.
-  for (std::uint16_t port = 18791; port < 18820; ++port) {
-    {
-      auto probe = atria::platform::listen_tcp(kHost, port, 4);
-      if (!probe.has_value()) {
-        continue;
-      }
-      // probe goes out of scope; the SocketHandle destructor closes the listener.
+  std::uint16_t port = 0;
+  {
+    auto probe = atria::platform::listen_tcp(kHost, 0, 4);
+    if (!probe.has_value()) {
+      return 0;
     }
-    thread = std::thread{[&app, port] { app.listen({.host = std::string{kHost}, .port = port}); }};
-    // Spin until accept-loop is ready.
-    for (int i = 0; i < 100; ++i) {
-      auto conn = atria::platform::connect_tcp(kHost, port);
-      if (conn.has_value()) {
-        return port;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    auto assigned_port = atria::platform::local_port(*probe);
+    if (!assigned_port.has_value()) {
+      return 0;
     }
-    return port;
+    port = *assigned_port;
   }
-  return 0;
+  thread = std::thread{[&app, port] { app.listen({.host = std::string{kHost}, .port = port}); }};
+  // Spin until accept-loop is ready.
+  for (int i = 0; i < 100; ++i) {
+    auto conn = atria::platform::connect_tcp(kHost, port);
+    if (conn.has_value()) {
+      return port;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return port;
 }
 
 [[nodiscard]] std::string drain(atria::platform::SocketHandle& conn) {

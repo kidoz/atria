@@ -1,24 +1,24 @@
 #include "platform/socket.hpp"
 
 #include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
-
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <string>
 #include <string_view>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 #include <utility>
 
 namespace atria::platform {
 
 void global_init() {}
+
 void global_shutdown() noexcept {}
 
 void SocketHandle::close() noexcept {
@@ -49,8 +49,8 @@ namespace {
 
 }  // namespace
 
-std::expected<SocketHandle, SocketError> listen_tcp(std::string_view host, std::uint16_t port,
-                                                    int backlog) {
+std::expected<SocketHandle, SocketError>
+listen_tcp(std::string_view host, std::uint16_t port, int backlog) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     return std::unexpected(errno_error("socket"));
@@ -83,6 +83,15 @@ std::expected<SocketHandle, SocketError> listen_tcp(std::string_view host, std::
     return std::unexpected(errno_error("listen"));
   }
   return sock;
+}
+
+std::expected<std::uint16_t, SocketError> local_port(SocketHandle& sock) {
+  sockaddr_in addr{};
+  socklen_t addr_len = sizeof(addr);
+  if (::getsockname(sock.native(), reinterpret_cast<sockaddr*>(&addr), &addr_len) < 0) {
+    return std::unexpected(errno_error("getsockname"));
+  }
+  return ntohs(addr.sin_port);
 }
 
 std::expected<SocketHandle, SocketError> connect_tcp(std::string_view host, std::uint16_t port) {
@@ -122,13 +131,13 @@ std::expected<SocketHandle, SocketError> accept_connection(SocketHandle& listene
   }
 }
 
-std::expected<SocketHandle, SocketError> accept_connection_with_peer(SocketHandle& listener,
-                                                                      std::string& peer_ip) {
+std::expected<SocketHandle, SocketError>
+accept_connection_with_peer(SocketHandle& listener, std::string& peer_ip) {
   while (true) {
     sockaddr_storage peer_addr{};
     socklen_t peer_addr_len = sizeof(peer_addr);
-    int accepted_fd = ::accept(listener.native(), reinterpret_cast<sockaddr*>(&peer_addr),
-                                &peer_addr_len);
+    int accepted_fd =
+        ::accept(listener.native(), reinterpret_cast<sockaddr*>(&peer_addr), &peer_addr_len);
     if (accepted_fd >= 0) {
       char address_text[INET6_ADDRSTRLEN] = {0};
       if (peer_addr.ss_family == AF_INET) {
@@ -199,8 +208,8 @@ std::expected<std::size_t, SocketError> send_some(SocketHandle& sock, std::strin
 
 namespace {
 
-[[nodiscard]] std::expected<void, SocketError> set_timeout(SocketHandle& sock, int optname,
-                                                            std::uint32_t milliseconds) {
+[[nodiscard]] std::expected<void, SocketError>
+set_timeout(SocketHandle& sock, int optname, std::uint32_t milliseconds) {
   timeval tv{};
   tv.tv_sec = static_cast<decltype(tv.tv_sec)>(milliseconds / 1000U);
   tv.tv_usec = static_cast<decltype(tv.tv_usec)>((milliseconds % 1000U) * 1000U);
@@ -212,13 +221,11 @@ namespace {
 
 }  // namespace
 
-std::expected<void, SocketError> set_recv_timeout(SocketHandle& sock,
-                                                  std::uint32_t milliseconds) {
+std::expected<void, SocketError> set_recv_timeout(SocketHandle& sock, std::uint32_t milliseconds) {
   return set_timeout(sock, SO_RCVTIMEO, milliseconds);
 }
 
-std::expected<void, SocketError> set_send_timeout(SocketHandle& sock,
-                                                  std::uint32_t milliseconds) {
+std::expected<void, SocketError> set_send_timeout(SocketHandle& sock, std::uint32_t milliseconds) {
   return set_timeout(sock, SO_SNDTIMEO, milliseconds);
 }
 

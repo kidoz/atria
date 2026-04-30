@@ -61,13 +61,12 @@ constexpr std::string_view kHost = "127.0.0.1";
 }
 
 [[nodiscard]] std::uint16_t pick_port() {
-  for (std::uint16_t candidate = 18950; candidate < 18999; ++candidate) {
-    auto probe = atria::platform::listen_tcp(kHost, candidate, 4);
-    if (probe.has_value()) {
-      return candidate;
-    }
+  auto probe = atria::platform::listen_tcp(kHost, 0, 4);
+  if (!probe.has_value()) {
+    return 0;
   }
-  return 0;
+  auto port = atria::platform::local_port(*probe);
+  return port.value_or(0);
 }
 
 struct RunningServer {
