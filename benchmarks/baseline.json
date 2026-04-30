@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Baseline ns/op for each microbenchmark. CI runs the benchmarks and asserts",
+    "measured <= baseline * tolerance_multiplier so an order-of-magnitude regression",
+    "fails the build but day-to-day runner noise doesn't.",
+    "",
+    "Numbers were captured on Apple M-series, release build, libc++.",
+    "Re-baseline by running benchmarks/run_baseline.py and committing the new file.",
+    "",
+    "Tolerance is intentionally generous because CI runners (especially shared-tenant",
+    "GitHub Actions runners) are 2-4x slower and noisier than developer machines."
+  ],
+  "tolerance_multiplier": 5.0,
+  "benchmarks": {
+    "atria-bench-router": {
+      "static literal match": 110.0,
+      "single parameter match": 130.0,
+      "two-parameter nested match": 195.0,
+      "not-found": 90.0
+    },
+    "atria-bench-json": {
+      "parse: small object": 165.0,
+      "parse: nested mixed": 600.0,
+      "stringify: small object": 205.0
+    },
+    "atria-bench-parser": {
+      "parse: GET /health (3 headers)": 200.0,
+      "parse: POST /items (json body)": 265.0,
+      "parse: GET /search?... (4 queries)": 385.0
+    }
+  }
+}
