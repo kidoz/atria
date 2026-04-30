@@ -12,6 +12,7 @@ atria_tests = executable(
     'test_openapi.cpp',
     'test_response.cpp',
     'test_router.cpp',
+    'test_runtime_chaos.cpp',
     'test_streaming.cpp',
     'test_url.cpp',
     'test_validation.cpp',
