@@ -1,10 +1,12 @@
 # Atria
 
-A new C++23 REST web framework, built **from scratch**. Inspired by FastAPI, ASP.NET MVC, and Spring Web.
+A C++23 REST + WebSocket framework, built **from scratch**. Inspired by FastAPI, ASP.NET MVC, and Spring Web.
 
 [![ci](https://img.shields.io/badge/ci-pending-lightgrey.svg)](.github/workflows/ci.yml)
-[![status](https://img.shields.io/badge/status-experimental-orange.svg)](#roadmap)
+[![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#roadmap)
 [![cpp](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](#)
+
+> **Status: alpha.** The HTTP/1.1 + WebSocket public surface is feature-complete and exercised by 730+ Catch2 v3 assertions across 117 cases, sanitizer-clean (ASan + UBSan), with chaos tests for peer disconnects and partial-frame WebSockets. Recommended deployment: behind a TLS-terminating reverse proxy (nginx, Caddy, HAProxy, Envoy). Native TLS and Windows IOCP are roadmap items; everything else listed below works today. The public API is not yet frozen — minor breakage expected before 1.0.
 
 ## Quick example
 
