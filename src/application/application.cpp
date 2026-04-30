@@ -17,6 +17,7 @@
 #include <expected>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -87,9 +88,16 @@ RouteBuilder Application::head(std::string_view path, Handler handler) {
   return make_builder(router_.add(Method::Head, path, std::move(handler)));
 }
 
-Application& Application::websocket(std::string_view path, WebSocketHandler handler) {
-  websocket_routes_.push_back(WebSocketRoute{std::string{path}, std::move(handler)});
-  return *this;
+RouteBuilder Application::websocket(std::string_view path, WebSocketHandler handler) {
+  auto route = std::make_unique<WebSocketRoute>();
+  route->path = std::string{path};
+  route->handler = std::move(handler);
+  route->meta.kind = RouteKind::WebSocket;
+  route->meta.method = Method::Get;
+  route->meta.path = route->path;
+  RouteMeta* meta = &route->meta;
+  websocket_routes_.push_back(std::move(route));
+  return RouteBuilder{meta};
 }
 
 Application&
@@ -176,13 +184,13 @@ match_websocket_path(std::string_view pattern, std::string_view path) {
 
 bool Application::dispatch_websocket(Request& request, WebSocketSession& session) {
   for (const auto& route : websocket_routes_) {
-    auto params = match_websocket_path(route.path, request.path());
+    auto params = match_websocket_path(route->path, request.path());
     if (!params.has_value()) {
       continue;
     }
     request.set_path_params(std::move(*params));
     session.set_request(&request);
-    route.handler(session);
+    route->handler(session);
     return true;
   }
   return false;
@@ -235,6 +243,9 @@ namespace {
 
 [[nodiscard]] Json build_operation_object(const RouteMeta& meta) {
   Json::Object operation;
+  if (meta.kind == RouteKind::WebSocket) {
+    operation.emplace_back("x-atria-websocket", true);
+  }
   if (!meta.operation_id.empty()) {
     operation.emplace_back("operationId", meta.operation_id);
   }
@@ -288,7 +299,14 @@ namespace {
 
   Json::Object responses;
   if (meta.responses.empty()) {
-    responses.emplace_back("default", Json::object({{"description", std::string{"OK"}}}));
+    if (meta.kind == RouteKind::WebSocket) {
+      responses.emplace_back(
+          "101",
+          Json::object({{"description", std::string{"Switching Protocols"}}})
+      );
+    } else {
+      responses.emplace_back("default", Json::object({{"description", std::string{"OK"}}}));
+    }
   } else {
     for (const auto& response : meta.responses) {
       Json::Object response_obj;
@@ -308,6 +326,21 @@ namespace {
   return Json{std::move(operation)};
 }
 
+void add_path_operation(
+    std::vector<std::pair<std::string, Json::Object>>& path_entries,
+    const RouteMeta& meta,
+    std::string operation_name
+) {
+  auto entry = std::ranges::find_if(path_entries, [&](const auto& candidate) {
+    return candidate.first == meta.path;
+  });
+  if (entry == path_entries.end()) {
+    path_entries.emplace_back(meta.path, Json::Object{});
+    entry = std::prev(path_entries.end());
+  }
+  entry->second.emplace_back(std::move(operation_name), build_operation_object(meta));
+}
+
 }  // namespace
 
 Json Application::openapi_json() const {
@@ -325,15 +358,11 @@ Json Application::openapi_json() const {
   // names. We collect into a vector first so traversal order is stable.
   std::vector<std::pair<std::string, Json::Object>> path_entries;
   router_.for_each_route([&](const RouteMeta& meta) {
-    auto entry = std::find_if(path_entries.begin(), path_entries.end(), [&](const auto& candidate) {
-      return candidate.first == meta.path;
-    });
-    if (entry == path_entries.end()) {
-      path_entries.emplace_back(meta.path, Json::Object{});
-      entry = std::prev(path_entries.end());
-    }
-    entry->second.emplace_back(method_to_lower(meta.method), build_operation_object(meta));
+    add_path_operation(path_entries, meta, method_to_lower(meta.method));
   });
+  for (const auto& route : websocket_routes_) {
+    add_path_operation(path_entries, route->meta, "x-atria-websocket");
+  }
 
   Json::Object paths;
   for (auto& [path, operations] : path_entries) {

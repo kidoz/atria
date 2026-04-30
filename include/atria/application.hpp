@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,7 +35,7 @@ public:
   RouteBuilder del(std::string_view path, Handler handler);
   RouteBuilder options(std::string_view path, Handler handler);
   RouteBuilder head(std::string_view path, Handler handler);
-  Application& websocket(std::string_view path, WebSocketHandler handler);
+  RouteBuilder websocket(std::string_view path, WebSocketHandler handler);
 
   Application& group(std::string_view prefix, const std::function<void(RouteGroup&)>& builder);
 
@@ -61,10 +62,11 @@ private:
   struct WebSocketRoute {
     std::string path;
     WebSocketHandler handler;
+    RouteMeta meta;
   };
 
   Router router_;
-  std::vector<WebSocketRoute> websocket_routes_;
+  std::vector<std::unique_ptr<WebSocketRoute>> websocket_routes_;
   std::vector<Middleware> middleware_;
   std::atomic<bool> running_{false};
   std::string openapi_title_{"Atria API"};

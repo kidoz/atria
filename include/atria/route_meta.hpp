@@ -3,11 +3,17 @@
 #include "atria/json.hpp"
 #include "atria/method.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace atria {
+
+enum class RouteKind : std::uint8_t {
+  Http,
+  WebSocket,
+};
 
 struct RouteRequestBody {
   std::string content_type{"application/json"};
@@ -25,6 +31,7 @@ struct RouteResponseSpec {
 // Metadata attached to a single (method, path) route. Filled via the fluent RouteBuilder
 // API and consumed by the OpenAPI emitter.
 struct RouteMeta {
+  RouteKind kind{RouteKind::Http};
   Method method{Method::Get};
   std::string path;  // canonical, with `{name}` placeholders preserved
   std::string operation_id;
