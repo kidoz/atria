@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://github.com/kidoz/logspine.git
+revision = c6dcb3ac9ec5fafe71dffabbfedab4c18d040972
+depth = 1
+clone-recursive = false
+
+[provide]
+logspine = logspine_dep

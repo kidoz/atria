@@ -1,0 +1,33 @@
+atria_sources = files(
+  'application/application.cpp',
+  'http/headers.cpp',
+  'http/method.cpp',
+  'http/parser.cpp',
+  'http/request.cpp',
+  'http/response.cpp',
+  'http/status.cpp',
+  'http/url.cpp',
+  'json/json.cpp',
+  'middleware/builtins.cpp',
+  'net/connection.cpp',
+  'net/notifier.cpp',
+  'net/server_runtime.cpp',
+  'net/tcp_listener.cpp',
+  'net/worker_pool.cpp',
+  'routing/router.cpp',
+  'validation/validator.cpp',
+)
+
+atria_lib = static_library(
+  'atria',
+  atria_sources + platform_sources,
+  include_directories: atria_inc,
+  dependencies: platform_deps,
+  install: true,
+)
+
+atria_dep = declare_dependency(
+  link_with: atria_lib,
+  include_directories: atria_inc,
+  dependencies: platform_deps,
+)
