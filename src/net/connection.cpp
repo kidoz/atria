@@ -10,6 +10,7 @@
 #include "net/websocket_protocol.hpp"
 #include "platform/socket.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -20,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace atria::net {
 
@@ -122,6 +124,77 @@ header_contains_token(const Request& req, std::string_view name, std::string_vie
   return req.method() == Method::Get && req.version() == HttpVersion::Http11 &&
          upgrade.has_value() && ascii_iequal(*upgrade, "websocket") &&
          header_contains_token(req, "Connection", "Upgrade");
+}
+
+[[nodiscard]] bool is_websocket_subprotocol_char(unsigned char c) noexcept {
+  if (c >= '0' && c <= '9') {
+    return true;
+  }
+  if (c >= 'A' && c <= 'Z') {
+    return true;
+  }
+  if (c >= 'a' && c <= 'z') {
+    return true;
+  }
+  switch (c) {
+  case '!':
+  case '#':
+  case '$':
+  case '%':
+  case '&':
+  case '\'':
+  case '*':
+  case '+':
+  case '-':
+  case '.':
+  case '^':
+  case '_':
+  case '`':
+  case '|':
+  case '~':
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool is_valid_websocket_subprotocol(std::string_view protocol) noexcept {
+  if (protocol.empty()) {
+    return false;
+  }
+  return std::ranges::all_of(protocol, [](char c) {
+    return is_websocket_subprotocol_char(static_cast<unsigned char>(c));
+  });
+}
+
+[[nodiscard]] std::optional<std::vector<std::string>>
+requested_websocket_subprotocols(const Request& request) {
+  auto header = request.header("Sec-WebSocket-Protocol");
+  if (!header.has_value()) {
+    return std::vector<std::string>{};
+  }
+
+  std::vector<std::string> protocols;
+  std::size_t cursor = 0;
+  while (cursor < header->size()) {
+    auto comma = header->find(',', cursor);
+    if (comma == std::string_view::npos) {
+      comma = header->size();
+    }
+    auto token = header->substr(cursor, comma - cursor);
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
+      token.remove_prefix(1);
+    }
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+      token.remove_suffix(1);
+    }
+    if (!is_valid_websocket_subprotocol(token)) {
+      return std::nullopt;
+    }
+    protocols.emplace_back(token);
+    cursor = comma + 1;
+  }
+  return protocols;
 }
 
 [[nodiscard]] std::optional<WebSocketCloseCode>
@@ -564,10 +637,20 @@ void Connection::start_websocket(Request request) {
     );
     return;
   }
+  auto requested_subprotocols = requested_websocket_subprotocols(request);
+  if (!requested_subprotocols.has_value()) {
+    start_writing(
+        error_response(Status::BadRequest, "invalid websocket subprotocol"),
+        /*keep_alive=*/false,
+        HttpVersion::Http11
+    );
+    return;
+  }
 
   websocket_request_ = std::move(request);
   websocket_session_ = WebSocketSession{};
   websocket_session_.set_request(&*websocket_request_);
+  websocket_session_.set_requested_subprotocols(std::move(*requested_subprotocols));
   std::weak_ptr<Connection> weak = shared_from_this();
   auto post = loop_task_hook_;
   auto post_to_connection = [weak, post](ConnectionTask task) {
@@ -612,6 +695,10 @@ void Connection::start_websocket(Request request) {
   write_buffer_.append("Connection: Upgrade\r\n");
   write_buffer_.append("Sec-WebSocket-Accept: ");
   write_buffer_.append(*accept);
+  if (!websocket_session_.selected_subprotocol().empty()) {
+    write_buffer_.append("\r\nSec-WebSocket-Protocol: ");
+    write_buffer_.append(websocket_session_.selected_subprotocol());
+  }
   write_buffer_.append("\r\n\r\n");
   write_offset_ = 0;
   upgrade_to_websocket_after_write_ = true;
@@ -678,7 +765,10 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
     if (frame.fin) {
       if (frame.opcode == Opcode::Text) {
         if (!websocket::is_valid_utf8(frame.payload)) {
-          queue_websocket_close(WebSocketCloseCode::InvalidFramePayloadData, "invalid utf-8 payload");
+          queue_websocket_close(
+              WebSocketCloseCode::InvalidFramePayloadData,
+              "invalid utf-8 payload"
+          );
           return;
         }
         websocket_session_.receive_text(frame.payload);
@@ -711,7 +801,10 @@ void Connection::handle_websocket_frame(const websocket::Frame& frame) {
       websocket_message_buffer_.clear();
       if (opcode == Opcode::Text) {
         if (!websocket::is_valid_utf8(message)) {
-          queue_websocket_close(WebSocketCloseCode::InvalidFramePayloadData, "invalid utf-8 payload");
+          queue_websocket_close(
+              WebSocketCloseCode::InvalidFramePayloadData,
+              "invalid utf-8 payload"
+          );
           return;
         }
         websocket_session_.receive_text(message);

@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -79,7 +80,8 @@ void wait_until_ready(std::uint16_t port) {
   return out;
 }
 
-[[nodiscard]] std::string websocket_handshake(std::string_view path = "/ws") {
+[[nodiscard]] std::string
+websocket_handshake(std::string_view path = "/ws", std::string_view protocols = {}) {
   std::string request = "GET ";
   request.append(path);
   request.append(" HTTP/1.1\r\n");
@@ -87,7 +89,13 @@ void wait_until_ready(std::uint16_t port) {
   request.append("Upgrade: websocket\r\n");
   request.append("Connection: keep-alive, Upgrade\r\n");
   request.append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n");
-  request.append("Sec-WebSocket-Version: 13\r\n\r\n");
+  request.append("Sec-WebSocket-Version: 13\r\n");
+  if (!protocols.empty()) {
+    request.append("Sec-WebSocket-Protocol: ");
+    request.append(protocols);
+    request.append("\r\n");
+  }
+  request.append("\r\n");
   return request;
 }
 
@@ -232,6 +240,97 @@ TEST_CASE("websocket handshake returns switching protocols", "[websocket]") {
   CHECK(
       response.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n") != std::string::npos
   );
+  CHECK(response.find("Sec-WebSocket-Protocol:") == std::string::npos);
+}
+
+TEST_CASE("websocket handler can select a requested subprotocol", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession& session) {
+    CHECK(session.requested_subprotocols() == std::vector<std::string>{"chat.v1", "chat.v2"});
+    CHECK(session.select_subprotocol("chat.v2"));
+    CHECK(session.selected_subprotocol() == "chat.v2");
+  });
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", "chat.v1, chat.v2")).has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+  CHECK(response.find("Sec-WebSocket-Protocol: chat.v2\r\n") != std::string::npos);
+}
+
+TEST_CASE(
+    "websocket subprotocol selection preserves client preference when handler does",
+    "[websocket]"
+) {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession& session) {
+    for (auto protocol : session.requested_subprotocols()) {
+      if (protocol == "chat.v1" || protocol == "chat.v2") {
+        REQUIRE(session.select_subprotocol(protocol));
+        return;
+      }
+    }
+  });
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", "chat.v2, chat.v1")).has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+  CHECK(response.find("Sec-WebSocket-Protocol: chat.v2\r\n") != std::string::npos);
+}
+
+TEST_CASE("websocket unsupported subprotocol is ignored when not selected", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession& session) {
+    CHECK_FALSE(session.select_subprotocol("chat.v2"));
+  });
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(atria::platform::send_all(*conn, websocket_handshake("/ws", "chat.v1")).has_value());
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 101 Switching Protocols\r\n") == 0);
+  CHECK(response.find("Sec-WebSocket-Protocol:") == std::string::npos);
+}
+
+TEST_CASE("websocket rejects invalid subprotocol header", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(
+      atria::platform::send_all(*conn, websocket_handshake("/ws", "chat.v1, bad value")).has_value()
+  );
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+  CHECK(response.find("invalid websocket subprotocol") != std::string::npos);
 }
 
 TEST_CASE("websocket route echoes text frames", "[websocket]") {

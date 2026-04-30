@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace atria::net {
 class Connection;
@@ -30,6 +31,16 @@ public:
   WebSocketSession() = default;
 
   [[nodiscard]] const Request& request() const noexcept { return *request_; }
+
+  [[nodiscard]] const std::vector<std::string>& requested_subprotocols() const noexcept {
+    return requested_subprotocols_;
+  }
+
+  [[nodiscard]] std::string_view selected_subprotocol() const noexcept {
+    return selected_subprotocol_;
+  }
+
+  [[nodiscard]] bool select_subprotocol(std::string_view protocol);
 
   void on_text(TextHandler handler);
   void on_binary(BinaryHandler handler);
@@ -69,6 +80,8 @@ private:
 
   void set_request(const Request* request) noexcept { request_ = request; }
 
+  void set_requested_subprotocols(std::vector<std::string> protocols);
+
   void set_text_sender(std::function<void(std::string)> sender);
   void set_binary_sender(std::function<void(std::string)> sender);
   void set_close_sender(std::function<void(WebSocketCloseCode, std::string)> sender);
@@ -82,6 +95,8 @@ private:
   BinaryHandler binary_handler_;
   CloseHandler close_handler_;
   Sender sender_;
+  std::vector<std::string> requested_subprotocols_;
+  std::string selected_subprotocol_;
 };
 
 using WebSocketHandler = std::function<void(WebSocketSession&)>;

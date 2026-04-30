@@ -1,9 +1,11 @@
 #include "atria/websocket.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace atria {
 
@@ -29,6 +31,20 @@ void WebSocketSession::send_binary(std::string message) {
 
 void WebSocketSession::close(WebSocketCloseCode code, std::string reason) {
   sender_.close(code, std::move(reason));
+}
+
+bool WebSocketSession::select_subprotocol(std::string_view protocol) {
+  auto selected = std::ranges::find(requested_subprotocols_, protocol);
+  if (selected == requested_subprotocols_.end()) {
+    return false;
+  }
+  selected_subprotocol_ = *selected;
+  return true;
+}
+
+void WebSocketSession::set_requested_subprotocols(std::vector<std::string> protocols) {
+  requested_subprotocols_ = std::move(protocols);
+  selected_subprotocol_.clear();
 }
 
 void WebSocketSession::set_text_sender(std::function<void(std::string)> sender) {
