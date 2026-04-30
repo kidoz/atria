@@ -137,7 +137,97 @@ public:
     return *this;
   }
 
+  RouteBuilder& websocket_subprotocol(std::string protocol) {
+    if (is_websocket_slot()) {
+      slot_->websocket_subprotocols.push_back(std::move(protocol));
+    }
+    return *this;
+  }
+
+  RouteBuilder& websocket_message(
+      WebSocketMessageDirection direction,
+      Json schema,
+      std::string description = {},
+      std::string content_type = "application/json"
+  ) {
+    if (is_websocket_slot()) {
+      slot_->websocket_messages.push_back(
+          RouteWebSocketMessageSpec{
+              .direction = direction,
+              .description = std::move(description),
+              .content_type = std::move(content_type),
+              .schema = std::move(schema),
+          }
+      );
+    }
+    return *this;
+  }
+
+  template <typename T>
+  RouteBuilder& websocket_message(
+      WebSocketMessageDirection direction,
+      std::string description = {},
+      std::string content_type = "application/json"
+  ) {
+    return websocket_message(
+        direction,
+        openapi::schema_for<T>::get(),
+        std::move(description),
+        std::move(content_type)
+    );
+  }
+
+  RouteBuilder& websocket_receive(
+      Json schema,
+      std::string description = {},
+      std::string content_type = "application/json"
+  ) {
+    return websocket_message(
+        WebSocketMessageDirection::Receive,
+        std::move(schema),
+        std::move(description),
+        std::move(content_type)
+    );
+  }
+
+  template <typename T>
+  RouteBuilder&
+  websocket_receive(std::string description = {}, std::string content_type = "application/json") {
+    return websocket_message<T>(
+        WebSocketMessageDirection::Receive,
+        std::move(description),
+        std::move(content_type)
+    );
+  }
+
+  RouteBuilder& websocket_send(
+      Json schema,
+      std::string description = {},
+      std::string content_type = "application/json"
+  ) {
+    return websocket_message(
+        WebSocketMessageDirection::Send,
+        std::move(schema),
+        std::move(description),
+        std::move(content_type)
+    );
+  }
+
+  template <typename T>
+  RouteBuilder&
+  websocket_send(std::string description = {}, std::string content_type = "application/json") {
+    return websocket_message<T>(
+        WebSocketMessageDirection::Send,
+        std::move(description),
+        std::move(content_type)
+    );
+  }
+
 private:
+  [[nodiscard]] bool is_websocket_slot() const noexcept {
+    return slot_ != nullptr && slot_->kind == RouteKind::WebSocket;
+  }
+
   RouteMeta* slot_{nullptr};
 };
 

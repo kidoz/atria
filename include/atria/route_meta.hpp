@@ -15,6 +15,11 @@ enum class RouteKind : std::uint8_t {
   WebSocket,
 };
 
+enum class WebSocketMessageDirection : std::uint8_t {
+  Receive,
+  Send,
+};
+
 struct RouteRequestBody {
   std::string content_type{"application/json"};
   Json schema;
@@ -26,6 +31,13 @@ struct RouteResponseSpec {
   std::string description;
   std::optional<Json> schema;
   std::string content_type{"application/json"};
+};
+
+struct RouteWebSocketMessageSpec {
+  WebSocketMessageDirection direction{WebSocketMessageDirection::Receive};
+  std::string description;
+  std::string content_type{"application/json"};
+  Json schema;
 };
 
 // Metadata attached to a single (method, path) route. Filled via the fluent RouteBuilder
@@ -40,6 +52,8 @@ struct RouteMeta {
   std::vector<std::string> tags;
   std::optional<RouteRequestBody> request_body;
   std::vector<RouteResponseSpec> responses;
+  std::vector<std::string> websocket_subprotocols;
+  std::vector<RouteWebSocketMessageSpec> websocket_messages;
   bool deprecated{false};
 };
 

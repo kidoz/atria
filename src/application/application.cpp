@@ -241,6 +241,29 @@ namespace {
   return text;
 }
 
+[[nodiscard]] std::string_view
+websocket_message_direction_name(WebSocketMessageDirection direction) noexcept {
+  switch (direction) {
+  case WebSocketMessageDirection::Receive:
+    return "receive";
+  case WebSocketMessageDirection::Send:
+    return "send";
+  }
+  return "receive";
+}
+
+[[nodiscard]] Json build_websocket_message_object(const RouteWebSocketMessageSpec& message) {
+  Json::Object entry;
+  entry.emplace_back("direction", std::string{websocket_message_direction_name(message.direction)});
+  if (!message.description.empty()) {
+    entry.emplace_back("description", message.description);
+  }
+  Json::Object content;
+  content.emplace_back(message.content_type, Json::object({{"schema", message.schema}}));
+  entry.emplace_back("content", Json{std::move(content)});
+  return Json{std::move(entry)};
+}
+
 [[nodiscard]] Json build_operation_object(const RouteMeta& meta) {
   Json::Object operation;
   if (meta.kind == RouteKind::WebSocket) {
@@ -265,6 +288,22 @@ namespace {
   }
   if (meta.deprecated) {
     operation.emplace_back("deprecated", true);
+  }
+  if (meta.kind == RouteKind::WebSocket && !meta.websocket_subprotocols.empty()) {
+    Json::Array subprotocols;
+    subprotocols.reserve(meta.websocket_subprotocols.size());
+    for (const auto& subprotocol : meta.websocket_subprotocols) {
+      subprotocols.emplace_back(subprotocol);
+    }
+    operation.emplace_back("x-atria-websocket-subprotocols", Json{std::move(subprotocols)});
+  }
+  if (meta.kind == RouteKind::WebSocket && !meta.websocket_messages.empty()) {
+    Json::Array messages;
+    messages.reserve(meta.websocket_messages.size());
+    for (const auto& message : meta.websocket_messages) {
+      messages.push_back(build_websocket_message_object(message));
+    }
+    operation.emplace_back("x-atria-websocket-messages", Json{std::move(messages)});
   }
 
   // Path parameters extracted from the URL template.

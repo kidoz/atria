@@ -178,7 +178,10 @@ TEST_CASE("openapi_json captures websocket route metadata", "[openapi]") {
   app.websocket("/ws/{room}", [](atria::WebSocketSession&) {})
       .name("connectRoom")
       .summary("Connect to a room")
-      .tag("websocket");
+      .tag("websocket")
+      .websocket_subprotocol("chat.v1")
+      .websocket_receive<CreateItemDto>("Client chat message")
+      .websocket_send<ItemDto>("Server chat message");
   app.get("/ws/{room}", [](Request&) { return Response::empty(Status::Ok); }).name("roomInfo");
 
   Json document = app.openapi_json();
@@ -191,6 +194,23 @@ TEST_CASE("openapi_json captures websocket route metadata", "[openapi]") {
   CHECK(websocket->find("operationId")->as_string() == "connectRoom");
   CHECK(websocket->find("summary")->as_string() == "Connect to a room");
   CHECK(websocket->find("tags")->as_array().at(0).as_string() == "websocket");
+  CHECK(
+      websocket->find("x-atria-websocket-subprotocols")->as_array().at(0).as_string() == "chat.v1"
+  );
+  const auto& messages = websocket->find("x-atria-websocket-messages")->as_array();
+  REQUIRE(messages.size() == 2);
+  CHECK(messages.at(0).find("direction")->as_string() == "receive");
+  CHECK(messages.at(0).find("description")->as_string() == "Client chat message");
+  CHECK(
+      messages.at(0)
+          .find("content")
+          ->find("application/json")
+          ->find("schema")
+          ->find("type")
+          ->as_string() == "object"
+  );
+  CHECK(messages.at(1).find("direction")->as_string() == "send");
+  CHECK(messages.at(1).find("description")->as_string() == "Server chat message");
   CHECK(
       websocket->find("responses")->find("101")->find("description")->as_string() ==
       "Switching Protocols"
