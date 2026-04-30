@@ -1,8 +1,10 @@
 #include "atria/request.hpp"
 
 #include "atria/headers.hpp"
+#include "atria/json.hpp"
 #include "atria/method.hpp"
 
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,7 +13,12 @@
 namespace atria {
 
 Request::Request(
-    Method method, std::string path, std::string query_raw, Headers headers, std::string body)
+    Method method,
+    std::string path,
+    std::string query_raw,
+    Headers headers,
+    std::string body
+)
     : method_(method),
       path_(std::move(path)),
       query_raw_(std::move(query_raw)),
@@ -38,6 +45,15 @@ std::optional<std::string_view> Request::path_param(std::string_view key) const 
     }
   }
   return std::nullopt;
+}
+
+std::expected<Json, JsonError> Request::json(Json::ParseLimits limits) const {
+  return Json::parse(body_, limits);
+}
+
+std::expected<Json, JsonError>
+Request::json(JsonKeyStyle key_style, Json::ParseLimits limits) const {
+  return Json::parse(body_, key_style, limits);
 }
 
 void Request::set_path_params(PathParams params) {

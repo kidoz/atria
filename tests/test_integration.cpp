@@ -12,10 +12,9 @@
 #include "atria/status.hpp"
 #include "platform/socket.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
 #include <atomic>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -49,8 +48,8 @@ struct RunningServer {
   }
 };
 
-[[nodiscard]] std::uint16_t pick_free_port_and_listen(atria::Application& app,
-                                                     std::thread& thread) {
+[[nodiscard]] std::uint16_t
+pick_free_port_and_listen(atria::Application& app, std::thread& thread) {
   // Try a small range of high ports to dodge a busy CI runner.
   for (std::uint16_t port = 18791; port < 18820; ++port) {
     {
@@ -60,9 +59,7 @@ struct RunningServer {
       }
       // probe goes out of scope; the SocketHandle destructor closes the listener.
     }
-    thread = std::thread{[&app, port] {
-      app.listen({.host = std::string{kHost}, .port = port});
-    }};
+    thread = std::thread{[&app, port] { app.listen({.host = std::string{kHost}, .port = port}); }};
     // Spin until accept-loop is ready.
     for (int i = 0; i < 100; ++i) {
       auto conn = atria::platform::connect_tcp(kHost, port);
@@ -110,11 +107,13 @@ TEST_CASE("server roundtrips a GET /health", "[integration]") {
   server.app = &app;
   REQUIRE(server.port != 0);
 
-  std::string response = http_exchange(server.port,
-                                       "GET /health HTTP/1.1\r\n"
-                                       "Host: 127.0.0.1\r\n"
-                                       "Connection: close\r\n"
-                                       "\r\n");
+  std::string response = http_exchange(
+      server.port,
+      "GET /health HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+  );
 
   REQUIRE(response.find("HTTP/1.1 200 OK\r\n") == 0);
   REQUIRE(response.find("Content-Type: application/json") != std::string::npos);
@@ -125,10 +124,12 @@ TEST_CASE("server roundtrips a POST with body and path parameter", "[integration
   atria::Application app;
   app.post("/echo/{id}", [](atria::Request& req) {
     auto id = req.path_param("id").value_or("");
-    return atria::Response::json(atria::Json::object({
-        {"id", std::string{id}},
-        {"body", std::string{req.body()}},
-    }));
+    return atria::Response::json(
+        atria::Json::object({
+            {"id", std::string{id}},
+            {"body", std::string{req.body()}},
+        })
+    );
   });
 
   RunningServer server;
@@ -137,19 +138,57 @@ TEST_CASE("server roundtrips a POST with body and path parameter", "[integration
   REQUIRE(server.port != 0);
 
   std::string body = R"({"k":"v"})";
-  std::string request =
-      "POST /echo/42 HTTP/1.1\r\n"
-      "Host: 127.0.0.1\r\n"
-      "Connection: close\r\n"
-      "Content-Type: application/json\r\n"
-      "Content-Length: " +
-      std::to_string(body.size()) + "\r\n\r\n" + body;
+  std::string request = "POST /echo/42 HTTP/1.1\r\n"
+                        "Host: 127.0.0.1\r\n"
+                        "Connection: close\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: " +
+                        std::to_string(body.size()) + "\r\n\r\n" + body;
 
   std::string response = http_exchange(server.port, request);
 
   REQUIRE(response.find("HTTP/1.1 200 OK\r\n") == 0);
   REQUIRE(response.find(R"("id":"42")") != std::string::npos);
   REQUIRE(response.find(R"("body":"{\"k\":\"v\"}")") != std::string::npos);
+}
+
+TEST_CASE("server parses and emits styled JSON keys", "[integration][json][naming]") {
+  atria::Application app;
+  app.post("/users", [](atria::Request& req) {
+    auto parsed = req.json(atria::JsonKeyStyle::SnakeCase);
+    if (!parsed.has_value()) {
+      return atria::Response::empty(atria::Status::BadRequest);
+    }
+    const atria::Json* display_name = parsed->find("display_name");
+    if (display_name == nullptr || !display_name->is_string()) {
+      return atria::Response::empty(atria::Status::BadRequest);
+    }
+    return atria::Response::json(
+        atria::Json::object({
+            {"display_name", display_name->as_string()},
+            {"created_at", "today"},
+        }),
+        atria::JsonKeyStyle::CamelCase
+    );
+  });
+
+  RunningServer server;
+  server.port = pick_free_port_and_listen(app, server.thread);
+  server.app = &app;
+  REQUIRE(server.port != 0);
+
+  std::string body = R"({"DisplayName":"Ada"})";
+  std::string request = "POST /users HTTP/1.1\r\n"
+                        "Host: 127.0.0.1\r\n"
+                        "Connection: close\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: " +
+                        std::to_string(body.size()) + "\r\n\r\n" + body;
+
+  std::string response = http_exchange(server.port, request);
+
+  REQUIRE(response.find("HTTP/1.1 200 OK\r\n") == 0);
+  REQUIRE(response.find(R"({"displayName":"Ada","createdAt":"today"})") != std::string::npos);
 }
 
 TEST_CASE("server returns 404 for unknown route", "[integration]") {
@@ -161,11 +200,13 @@ TEST_CASE("server returns 404 for unknown route", "[integration]") {
   server.app = &app;
   REQUIRE(server.port != 0);
 
-  std::string response = http_exchange(server.port,
-                                       "GET /missing HTTP/1.1\r\n"
-                                       "Host: 127.0.0.1\r\n"
-                                       "Connection: close\r\n"
-                                       "\r\n");
+  std::string response = http_exchange(
+      server.port,
+      "GET /missing HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+  );
 
   REQUIRE(response.find("HTTP/1.1 404 Not Found\r\n") == 0);
   REQUIRE(response.find(R"("code":"not_found")") != std::string::npos);
@@ -186,11 +227,15 @@ TEST_CASE("server keeps connection alive for multiple requests", "[integration][
   REQUIRE(conn.has_value());
 
   for (int i = 0; i < 3; ++i) {
-    REQUIRE(atria::platform::send_all(*conn,
-                                       std::string_view{"GET /n HTTP/1.1\r\n"
-                                                        "Host: 127.0.0.1\r\n"
-                                                        "\r\n"})
-                .has_value());
+    REQUIRE(
+        atria::platform::send_all(
+            *conn,
+            std::string_view{"GET /n HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n"
+                             "\r\n"}
+        )
+            .has_value()
+    );
 
     // Read until we have one full response (Content-Length-driven).
     std::string acc;
@@ -220,16 +265,15 @@ TEST_CASE("server decodes chunked request body", "[integration][chunked]") {
   server.app = &app;
   REQUIRE(server.port != 0);
 
-  std::string raw =
-      "POST /echo HTTP/1.1\r\n"
-      "Host: 127.0.0.1\r\n"
-      "Connection: close\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "\r\n"
-      "5\r\nhello\r\n"
-      "1\r\n,\r\n"
-      "6\r\nworld!\r\n"
-      "0\r\n\r\n";
+  std::string raw = "POST /echo HTTP/1.1\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Connection: close\r\n"
+                    "Transfer-Encoding: chunked\r\n"
+                    "\r\n"
+                    "5\r\nhello\r\n"
+                    "1\r\n,\r\n"
+                    "6\r\nworld!\r\n"
+                    "0\r\n\r\n";
   std::string response = http_exchange(server.port, raw);
   REQUIRE(response.find("HTTP/1.1 200 OK\r\n") == 0);
   REQUIRE(response.find("\r\n\r\nhello,world!") != std::string::npos);
@@ -244,11 +288,13 @@ TEST_CASE("server returns 400 on malformed request", "[integration]") {
   server.app = &app;
   REQUIRE(server.port != 0);
 
-  std::string response = http_exchange(server.port,
-                                       "BREW / HTTP/1.1\r\n"
-                                       "Host: 127.0.0.1\r\n"
-                                       "Connection: close\r\n"
-                                       "\r\n");
+  std::string response = http_exchange(
+      server.port,
+      "BREW / HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+  );
 
   REQUIRE((response.find("HTTP/1.1 400") == 0 || response.find("HTTP/1.1 501") == 0));
 }

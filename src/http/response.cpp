@@ -78,6 +78,12 @@ Response Response::json(const Json& value, Status status) {
   return r;
 }
 
+Response Response::json(const Json& value, JsonKeyStyle key_style, Status status) {
+  Response r{status, value.stringify(key_style)};
+  r.headers_.set("Content-Type", "application/json; charset=utf-8");
+  return r;
+}
+
 Response Response::empty(Status status) {
   return Response{status};
 }

@@ -3,10 +3,10 @@
 #include "atria/status.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 using atria::Json;
+using atria::JsonKeyStyle;
 using atria::Response;
 using atria::Status;
 
@@ -24,6 +24,19 @@ TEST_CASE("json responses set application/json", "[response]") {
   std::string s = r.serialize();
   CHECK(s.find("Content-Type: application/json") != std::string::npos);
   CHECK(s.find(R"({"a":1})") != std::string::npos);
+}
+
+TEST_CASE("json responses can serialize with a key style", "[response][json][naming]") {
+  Response r = Response::json(
+      Json::object({
+          {"user_id", 42},
+          {"display_name", "Ada"},
+      }),
+      JsonKeyStyle::CamelCase
+  );
+  std::string s = r.serialize();
+  CHECK(s.find("Content-Type: application/json") != std::string::npos);
+  CHECK(s.find(R"({"userId":42,"displayName":"Ada"})") != std::string::npos);
 }
 
 TEST_CASE("empty response uses No Content by default", "[response]") {

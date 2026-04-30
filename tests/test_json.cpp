@@ -132,6 +132,13 @@ TEST_CASE("parse converts object keys recursively", "[json][naming]") {
   CHECK(items->as_array()[0].find("item_name")->as_string() == "one");
 }
 
+TEST_CASE("parse accepts key style without explicit limits", "[json][naming]") {
+  auto parsed = Json::parse(R"({"DisplayName":"Ada"})", JsonKeyStyle::SnakeCase);
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->find("display_name") != nullptr);
+  CHECK(parsed->find("display_name")->as_string() == "Ada");
+}
+
 TEST_CASE("key style preserve remains the default", "[json][naming]") {
   auto parsed = Json::parse(R"({"displayName":"Ada"})");
   REQUIRE(parsed.has_value());

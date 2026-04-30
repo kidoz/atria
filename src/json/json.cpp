@@ -681,6 +681,12 @@ std::expected<Json, JsonError> Json::parse(std::string_view text, ParseLimits li
 }
 
 std::expected<Json, JsonError>
+Json::parse(std::string_view text, JsonKeyStyle key_style, ParseLimits limits) {
+  Parser p{text, limits, key_style};
+  return p.parse_root();
+}
+
+std::expected<Json, JsonError>
 Json::parse(std::string_view text, ParseLimits limits, JsonKeyStyle key_style) {
   Parser p{text, limits, key_style};
   return p.parse_root();

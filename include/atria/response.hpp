@@ -4,6 +4,7 @@
 #include "atria/status.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -17,6 +18,7 @@ class Connection;
 }
 
 class Json;
+enum class JsonKeyStyle : std::uint8_t;
 
 // Pull-based chunk source for streaming responses. The runtime calls the provider on the
 // loop thread when the connection is ready to send more bytes. Returning std::nullopt (or
@@ -58,6 +60,7 @@ public:
 
   static Response text(std::string body, Status status = Status::Ok);
   static Response json(const Json& value, Status status = Status::Ok);
+  static Response json(const Json& value, JsonKeyStyle key_style, Status status = Status::Ok);
   static Response empty(Status status = Status::NoContent);
 
   // Streaming factory. The body is produced lazily by `provider`. If `content_length` is

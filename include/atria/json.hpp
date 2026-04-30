@@ -93,6 +93,8 @@ public:
   [[nodiscard]] static std::expected<Json, JsonError>
   parse(std::string_view text, ParseLimits limits = {});
   [[nodiscard]] static std::expected<Json, JsonError>
+  parse(std::string_view text, JsonKeyStyle key_style, ParseLimits limits = {});
+  [[nodiscard]] static std::expected<Json, JsonError>
   parse(std::string_view text, ParseLimits limits, JsonKeyStyle key_style);
 
   [[nodiscard]] std::string stringify() const;
