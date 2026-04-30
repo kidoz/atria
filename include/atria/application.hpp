@@ -4,6 +4,7 @@
 #include "atria/middleware.hpp"
 #include "atria/router.hpp"
 #include "atria/server_config.hpp"
+#include "atria/websocket.hpp"
 
 #include <atomic>
 #include <functional>
@@ -14,7 +15,7 @@
 namespace atria {
 
 class Application {
- public:
+public:
   Application();
   ~Application();
   Application(const Application&) = delete;
@@ -33,15 +34,18 @@ class Application {
   RouteBuilder del(std::string_view path, Handler handler);
   RouteBuilder options(std::string_view path, Handler handler);
   RouteBuilder head(std::string_view path, Handler handler);
+  Application& websocket(std::string_view path, WebSocketHandler handler);
 
   Application& group(std::string_view prefix, const std::function<void(RouteGroup&)>& builder);
 
   [[nodiscard]] Response dispatch(Request& request);
+  [[nodiscard]] bool dispatch_websocket(Request& request, WebSocketSession& session);
 
   int listen(ServerConfig config);
   void shutdown() noexcept;
 
   [[nodiscard]] Router& router() noexcept { return router_; }
+
   [[nodiscard]] const Router& router() const noexcept { return router_; }
 
   // OpenAPI metadata configuration. Set the API's display name and version; the values
@@ -53,8 +57,14 @@ class Application {
   // `RouteBuilder::name()` etc. on them to populate richer fields.
   [[nodiscard]] Json openapi_json() const;
 
- private:
+private:
+  struct WebSocketRoute {
+    std::string path;
+    WebSocketHandler handler;
+  };
+
   Router router_;
+  std::vector<WebSocketRoute> websocket_routes_;
   std::vector<Middleware> middleware_;
   std::atomic<bool> running_{false};
   std::string openapi_title_{"Atria API"};

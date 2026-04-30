@@ -43,7 +43,10 @@ namespace atria::net {
 ServerRuntime::ServerRuntime(Application& app, const ServerConfig& config)
     : app_(app), config_(config) {}
 
-std::string ServerRuntime::read_request_bytes(platform::SocketHandle& /*conn*/) { return {}; }
+std::string ServerRuntime::read_request_bytes(platform::SocketHandle& /*conn*/) {
+  return {};
+}
+
 void ServerRuntime::handle_connection(platform::SocketHandle /*conn*/) {}
 
 namespace {
@@ -58,19 +61,26 @@ struct Completion {
 int ServerRuntime::run(std::atomic<bool>& running) {
   platform::global_init();
 
-  auto listener = TcpListener::bind(config_.host, config_.port,
-                                    static_cast<int>(config_.accept_backlog));
+  auto listener =
+      TcpListener::bind(config_.host, config_.port, static_cast<int>(config_.accept_backlog));
   if (!listener.has_value()) {
     std::fprintf(stderr, "[atria] listen failed: %s\n", listener.error().message.c_str());
     return 1;
   }
   if (auto nb = platform::set_nonblocking(listener->handle(), true); !nb.has_value()) {
-    std::fprintf(stderr, "[atria] set_nonblocking(listener) failed: %s\n",
-                 nb.error().message.c_str());
+    std::fprintf(
+        stderr,
+        "[atria] set_nonblocking(listener) failed: %s\n",
+        nb.error().message.c_str()
+    );
     return 1;
   }
-  std::fprintf(stderr, "[atria] listening on %s:%u\n", config_.host.c_str(),
-               static_cast<unsigned>(config_.port));
+  std::fprintf(
+      stderr,
+      "[atria] listening on %s:%u\n",
+      config_.host.c_str(),
+      static_cast<unsigned>(config_.port)
+  );
 
   auto loop = make_event_loop();
   if (!loop) {
@@ -115,13 +125,15 @@ int ServerRuntime::run(std::atomic<bool>& running) {
 
   auto connection_io_mask = [](Connection& connection) -> IoEvent {
     switch (connection.state()) {
-      case ConnectionState::Reading:
-        return IoEvent::Read;
-      case ConnectionState::Writing:
-        return IoEvent::Write;
-      case ConnectionState::Dispatching:
-      case ConnectionState::Closing:
-        return IoEvent::None;
+    case ConnectionState::Reading:
+      return IoEvent::Read;
+    case ConnectionState::Writing:
+      return IoEvent::Write;
+    case ConnectionState::WebSocket:
+      return connection.wants_write() ? (IoEvent::Read | IoEvent::Write) : IoEvent::Read;
+    case ConnectionState::Dispatching:
+    case ConnectionState::Closing:
+      return IoEvent::None;
     }
     return IoEvent::None;
   };
@@ -133,8 +145,14 @@ int ServerRuntime::run(std::atomic<bool>& running) {
   DispatchHook dispatch_hook;
   if (pool) {
     dispatch_hook = [&app = app_, &pool, &notifier, &completions_mu, &completions](
-                        std::shared_ptr<Connection> conn, Request request) {
-      pool->submit([&app, &notifier, &completions_mu, &completions, conn = std::move(conn),
+                        std::shared_ptr<Connection> conn,
+                        Request request
+                    ) {
+      pool->submit([&app,
+                    &notifier,
+                    &completions_mu,
+                    &completions,
+                    conn = std::move(conn),
                     request = std::move(request)]() mutable {
         Response response = app.dispatch(request);
         {
@@ -170,8 +188,7 @@ int ServerRuntime::run(std::atomic<bool>& running) {
         continue;
       }
       auto fd = accepted->native();
-      auto conn =
-          std::make_shared<Connection>(std::move(*accepted), app_, config_, dispatch_hook);
+      auto conn = std::make_shared<Connection>(std::move(*accepted), app_, config_, dispatch_hook);
       Connection* raw = conn.get();
       conns.emplace(fd, std::move(conn));
       peer_of.emplace(fd, peer_ip);

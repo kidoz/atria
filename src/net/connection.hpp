@@ -12,6 +12,8 @@
 #include "atria/request.hpp"
 #include "atria/response.hpp"
 #include "atria/server_config.hpp"
+#include "atria/websocket.hpp"
+#include "net/websocket_protocol.hpp"
 #include "platform/socket.hpp"
 
 #include <chrono>
@@ -20,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <string>
 
 namespace atria {
@@ -34,6 +37,7 @@ enum class ConnectionState : std::uint8_t {
   Reading,      // accumulating header + body bytes
   Dispatching,  // request submitted to worker pool, awaiting completion
   Writing,      // sending serialized response
+  WebSocket,    // upgraded RFC 6455 connection
   Closing,      // socket should be closed and connection removed
 };
 
@@ -45,11 +49,15 @@ enum class ConnectionState : std::uint8_t {
 using DispatchHook = std::function<void(std::shared_ptr<Connection> conn, Request request)>;
 
 class Connection : public std::enable_shared_from_this<Connection> {
- public:
+public:
   using Clock = std::chrono::steady_clock;
 
-  Connection(platform::SocketHandle socket, Application& app, const ServerConfig& config,
-             DispatchHook dispatch_hook);
+  Connection(
+      platform::SocketHandle socket,
+      Application& app,
+      const ServerConfig& config,
+      DispatchHook dispatch_hook
+  );
   ~Connection() = default;
   Connection(const Connection&) = delete;
   Connection& operator=(const Connection&) = delete;
@@ -57,8 +65,12 @@ class Connection : public std::enable_shared_from_this<Connection> {
   Connection& operator=(Connection&&) = delete;
 
   [[nodiscard]] platform::NativeSocket fd() const noexcept { return socket_.native(); }
+
   [[nodiscard]] ConnectionState state() const noexcept { return state_; }
+
   [[nodiscard]] bool is_closing() const noexcept { return state_ == ConnectionState::Closing; }
+
+  [[nodiscard]] bool wants_write() const noexcept;
 
   [[nodiscard]] bool is_overdue(Clock::time_point now) const noexcept;
 
@@ -70,12 +82,12 @@ class Connection : public std::enable_shared_from_this<Connection> {
 
   void mark_closing() noexcept;
 
- private:
+private:
   enum class StreamMode : std::uint8_t {
-    None,         // not a streaming response
-    Chunked,      // HTTP/1.1, no Content-Length: emit Transfer-Encoding: chunked frames
-    RawCounted,   // Content-Length is known: emit raw bytes, total bound by length
-    RawClosing,   // HTTP/1.0, no Content-Length: emit raw bytes, close on EOS
+    None,        // not a streaming response
+    Chunked,     // HTTP/1.1, no Content-Length: emit Transfer-Encoding: chunked frames
+    RawCounted,  // Content-Length is known: emit raw bytes, total bound by length
+    RawClosing,  // HTTP/1.0, no Content-Length: emit raw bytes, close on EOS
   };
 
   void try_parse_and_dispatch();
@@ -85,6 +97,14 @@ class Connection : public std::enable_shared_from_this<Connection> {
   void emit_chunk_into_buffer(std::string_view chunk);
   void emit_terminator_into_buffer();
   void finish_write();
+  void start_websocket(Request request);
+  void on_websocket_readable();
+  void on_websocket_writable();
+  void process_websocket_buffer();
+  void handle_websocket_frame(const websocket::Frame& frame);
+  void queue_websocket_frame(websocket::Opcode opcode, std::string_view payload);
+  void queue_websocket_close(WebSocketCloseCode code, std::string_view reason);
+  void flush_websocket_output();
 
   platform::SocketHandle socket_;
   Application& app_;
@@ -99,6 +119,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   ConnectionState state_{ConnectionState::Reading};
   std::size_t request_count_{0};
   bool keep_alive_after_response_{false};
+  bool upgrade_to_websocket_after_write_{false};
   HttpVersion last_request_version_{HttpVersion::Http11};
   Clock::time_point last_activity_{Clock::now()};
   Clock::duration current_timeout_{};
@@ -113,7 +134,16 @@ class Connection : public std::enable_shared_from_this<Connection> {
   ChunkProvider chunk_provider_;
   StreamMode stream_mode_{StreamMode::None};
   std::optional<std::size_t> stream_remaining_;  // for RawCounted: bytes left to emit
-  bool stream_finished_{false};                   // EOS reached and terminator (if any) queued
+  bool stream_finished_{false};                  // EOS reached and terminator (if any) queued
+
+  std::optional<Request> websocket_request_;
+  WebSocketSession websocket_session_;
+  std::queue<std::string> websocket_outbox_;
+  std::size_t websocket_queued_bytes_{0};
+  std::optional<websocket::Opcode> websocket_fragment_opcode_;
+  std::string websocket_message_buffer_;
+  bool websocket_close_queued_{false};
+  bool websocket_close_after_write_{false};
 };
 
 }  // namespace atria::net

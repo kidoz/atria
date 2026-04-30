@@ -1,5 +1,6 @@
 atria_sources = files(
   'application/application.cpp',
+  'application/websocket.cpp',
   'http/headers.cpp',
   'http/method.cpp',
   'http/parser.cpp',
@@ -14,6 +15,7 @@ atria_sources = files(
   'net/server_runtime.cpp',
   'net/tcp_listener.cpp',
   'net/worker_pool.cpp',
+  'net/websocket_protocol.cpp',
   'routing/router.cpp',
   'validation/validator.cpp',
 )

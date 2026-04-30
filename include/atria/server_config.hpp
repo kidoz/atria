@@ -31,6 +31,12 @@ struct ServerConfig {
   // Connection budgets. Tighten in production; 0 = unlimited.
   std::size_t max_connections{1024};
   std::size_t max_connections_per_ip{64};
+
+  // WebSocket budgets. These apply after an HTTP/1.1 connection has been upgraded.
+  std::size_t max_websocket_frame_bytes{std::size_t{64} * 1024};
+  std::size_t max_websocket_message_bytes{std::size_t{1024} * 1024};
+  std::size_t max_websocket_queue_bytes{std::size_t{1024} * 1024};
+  std::uint32_t websocket_idle_timeout_ms{60000};
 };
 
 }  // namespace atria

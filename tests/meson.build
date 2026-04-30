@@ -16,6 +16,7 @@ atria_tests = executable(
     'test_url.cpp',
     'test_validation.cpp',
     'test_worker_pool.cpp',
+    'test_websocket.cpp',
   ),
   include_directories: atria_inc,
   dependencies: [atria_dep, catch2_with_main_dep],

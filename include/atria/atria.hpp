@@ -16,3 +16,4 @@
 #include "atria/status.hpp"
 #include "atria/url.hpp"
 #include "atria/validation.hpp"
+#include "atria/websocket.hpp"

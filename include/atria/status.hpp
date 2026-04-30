@@ -6,6 +6,7 @@
 namespace atria {
 
 enum class Status : std::uint16_t {
+  SwitchingProtocols = 101,
   Ok = 200,
   Created = 201,
   NoContent = 204,
