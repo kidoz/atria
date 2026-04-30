@@ -47,3 +47,7 @@ LogSpine writes structured records to the console:
 
 - The example uses `logspine::sync_dispatcher` so each call writes immediately. Production deployments should prefer `async_dispatcher` with a bounded queue (the LogSpine README documents the options).
 - CtorWire is header-only; LogSpine builds a small static/shared library. Both stay outside Atria's core dependency graph — they only show up if you opt into this example.
+
+## See also
+
+For a full list of companion C++23 libraries that pair naturally with Atria — including [AsterORM](https://github.com/kidoz/asterorm) for PostgreSQL persistence — see `docs/companion-libraries.md`. A future `examples/postgres_api/` will demonstrate AsterORM running on the worker pool.
