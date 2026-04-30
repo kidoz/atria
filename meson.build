@@ -70,6 +70,7 @@ subdir('src')
 subdir('tests')
 subdir('examples/todo_api')
 subdir('examples/di_api')
+subdir('examples/websocket_chat')
 
 if get_option('benchmarks')
   subdir('benchmarks')
