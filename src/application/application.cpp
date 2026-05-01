@@ -9,6 +9,7 @@
 #include "atria/router.hpp"
 #include "atria/server_config.hpp"
 #include "atria/status.hpp"
+#include "atria/url.hpp"
 #include "atria/websocket.hpp"
 #include "net/server_runtime.hpp"
 
@@ -157,19 +158,19 @@ namespace {
 [[nodiscard]] std::optional<Request::PathParams>
 match_websocket_path(std::string_view pattern, std::string_view path) {
   auto pattern_segments = split_view_path(pattern);
-  auto path_segments = split_view_path(path);
-  if (pattern_segments.size() != path_segments.size()) {
+  auto path_segments = decode_path_segments(path);
+  if (!path_segments.has_value() || pattern_segments.size() != path_segments->size()) {
     return std::nullopt;
   }
 
   Request::PathParams params;
   for (std::size_t i = 0; i < pattern_segments.size(); ++i) {
-    auto pattern_segment = pattern_segments[i];
-    auto path_segment = path_segments[i];
+    auto pattern_segment = pattern_segments.at(i);
+    const auto& path_segment = path_segments->at(i);
     if (is_param_segment(pattern_segment)) {
       params.emplace_back(
           std::string{pattern_segment.substr(1, pattern_segment.size() - 2)},
-          std::string{path_segment}
+          path_segment
       );
       continue;
     }

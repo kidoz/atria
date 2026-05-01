@@ -45,13 +45,13 @@ TEST_CASE("literal routes win over parameter routes", "[router]") {
   bool literal_called = false;
   bool param_called = false;
   REQUIRE(r.add(Method::Get, "/users/me", [&](Request&) {
-                literal_called = true;
-                return Response{Status::Ok};
-              }).has_value());
+             literal_called = true;
+             return Response{Status::Ok};
+           }).has_value());
   REQUIRE(r.add(Method::Get, "/users/{id}", [&](Request&) {
-                param_called = true;
-                return Response{Status::Ok};
-              }).has_value());
+             param_called = true;
+             return Response{Status::Ok};
+           }).has_value());
   auto m = r.match(Method::Get, "/users/me");
   REQUIRE(m.outcome == MatchOutcome::Found);
   Request req;
@@ -90,4 +90,73 @@ TEST_CASE("route group prefixing works", "[router]") {
 
   CHECK(router.match(Method::Get, "/api/v1/items").outcome == MatchOutcome::Found);
   CHECK(router.match(Method::Post, "/api/v1/items").outcome == MatchOutcome::Found);
+}
+
+TEST_CASE("decodes percent-encoded path parameters", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/files/{name}", ok_handler()).has_value());
+
+  auto m = r.match(Method::Get, "/files/hello%20world");
+  REQUIRE(m.outcome == MatchOutcome::Found);
+  REQUIRE(m.params.size() == 1);
+  CHECK(m.params[0].first == "name");
+  CHECK(m.params[0].second == "hello world");
+}
+
+TEST_CASE("decodes percent-encoded literal path segments", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/files/report", ok_handler()).has_value());
+
+  auto m = r.match(Method::Get, "/files/%72eport");
+  CHECK(m.outcome == MatchOutcome::Found);
+}
+
+TEST_CASE("does not decode plus as space in path parameters", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/math/{expr}", ok_handler()).has_value());
+
+  auto m = r.match(Method::Get, "/math/1+1");
+  REQUIRE(m.outcome == MatchOutcome::Found);
+  REQUIRE(m.params.size() == 1);
+  CHECK(m.params[0].first == "expr");
+  CHECK(m.params[0].second == "1+1");
+}
+
+TEST_CASE("rejects invalid percent escapes in path segments", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/files/{name}", ok_handler()).has_value());
+
+  CHECK(r.match(Method::Get, "/files/%XX").outcome == MatchOutcome::NotFound);
+  CHECK(r.match(Method::Get, "/files/%2").outcome == MatchOutcome::NotFound);
+}
+
+TEST_CASE("normalizes dot segments preventing path traversal", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/items", ok_handler()).has_value());
+  REQUIRE(r.add(Method::Get, "/", ok_handler()).has_value());
+
+  CHECK(r.match(Method::Get, "/api/../items").outcome == MatchOutcome::Found);
+  CHECK(r.match(Method::Get, "/items/./").outcome == MatchOutcome::Found);
+  CHECK(r.match(Method::Get, "/items/..").outcome == MatchOutcome::Found);
+  CHECK(r.match(Method::Get, "/items/../../..").outcome == MatchOutcome::Found);
+  CHECK(r.match(Method::Get, "/api/%2E%2E/items").outcome == MatchOutcome::Found);
+}
+
+TEST_CASE("rejects encoded path separators in route segments", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/files/{path}", ok_handler()).has_value());
+
+  CHECK(r.match(Method::Get, "/files/a%2Fb").outcome == MatchOutcome::NotFound);
+  CHECK(r.match(Method::Get, "/files/a%5Cb").outcome == MatchOutcome::NotFound);
+  CHECK(r.match(Method::Get, "/files/a%2F..%2Fsecret").outcome == MatchOutcome::NotFound);
+}
+
+TEST_CASE("normalizes encoded traversal before route matching", "[router]") {
+  Router r;
+  REQUIRE(r.add(Method::Get, "/files/{path}", ok_handler()).has_value());
+
+  auto m = r.match(Method::Get, "/files/%2E%2E/files/secret");
+  REQUIRE(m.outcome == MatchOutcome::Found);
+  REQUIRE(m.params.size() == 1);
+  CHECK(m.params[0].second == "secret");
 }

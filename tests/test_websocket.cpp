@@ -603,12 +603,28 @@ TEST_CASE("websocket path params are available on the session request", "[websoc
 
   RunningServer server;
   start_server(server, app);
-  auto conn = open_websocket(server.port, "/ws/lobby");
+  auto conn = open_websocket(server.port, "/ws/main%20room");
 
   REQUIRE(atria::platform::send_all(conn, masked_client_frame(0x1, "hello")).has_value());
   auto frame = read_server_frame(conn);
   CHECK(frame.opcode == 0x1);
-  CHECK(frame.payload == "lobby:hello");
+  CHECK(frame.payload == "main room:hello");
+}
+
+TEST_CASE("websocket route matching rejects unsafe escaped path segments", "[websocket]") {
+  atria::Application app;
+  app.websocket("/ws/{room}", [](atria::WebSocketSession&) {});
+
+  RunningServer server;
+  start_server(server, app);
+
+  auto conn = atria::platform::connect_tcp(kHost, server.port);
+  REQUIRE(conn.has_value());
+  REQUIRE(atria::platform::set_recv_timeout(*conn, 2000).has_value());
+  REQUIRE(atria::platform::send_all(*conn, websocket_handshake("/ws/a%2Fb")).has_value());
+
+  std::string response = read_until(*conn, "\r\n\r\n");
+  CHECK(response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
 }
 
 TEST_CASE("websocket responds to ping with pong", "[websocket]") {

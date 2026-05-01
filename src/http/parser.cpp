@@ -80,8 +80,8 @@ struct ChunkedResult {
   std::size_t consumed{0};
 };
 
-[[nodiscard]] std::expected<ChunkedResult, HttpError> decode_chunked(std::string_view view,
-                                                                      std::size_t max_body_bytes) {
+[[nodiscard]] std::expected<ChunkedResult, HttpError>
+decode_chunked(std::string_view view, std::size_t max_body_bytes) {
   ChunkedResult result;
   result.body.reserve(view.size());
   std::size_t pos = 0;
@@ -148,14 +148,12 @@ struct ChunkedResult {
 
 }  // namespace
 
-std::expected<Request, HttpError> parse_request(std::string_view buffer,
-                                                const ParseLimits& limits,
-                                                std::size_t* consumed) {
+std::expected<Request, HttpError>
+parse_request(std::string_view buffer, const ParseLimits& limits, std::size_t* consumed) {
   std::size_t header_terminator = buffer.find("\r\n\r\n");
   if (header_terminator == std::string_view::npos) {
     if (buffer.size() > limits.max_request_line_bytes + limits.max_header_bytes) {
-      return std::unexpected(
-          HttpError{Status::PayloadTooLarge, "header section too large", false});
+      return std::unexpected(HttpError{Status::PayloadTooLarge, "header section too large", false});
     }
     return std::unexpected(needs_more());
   }
@@ -201,6 +199,10 @@ std::expected<Request, HttpError> parse_request(std::string_view buffer,
     path = target.substr(0, q);
     query = target.substr(q + 1);
   }
+  auto normalized_path = normalize_path(path);
+  if (!normalized_path.has_value()) {
+    return std::unexpected(bad_request("invalid request target"));
+  }
 
   std::string_view headers_view = header_block.substr(request_line_end + 2);
   if (headers_view.size() > limits.max_header_bytes) {
@@ -245,12 +247,12 @@ std::expected<Request, HttpError> parse_request(std::string_view buffer,
   bool is_chunked = false;
   if (te_opt.has_value()) {
     if (cl_opt.has_value()) {
-      return std::unexpected(
-          bad_request("Content-Length and Transfer-Encoding both present"));
+      return std::unexpected(bad_request("Content-Length and Transfer-Encoding both present"));
     }
     if (!ascii_iequal(*te_opt, "chunked")) {
       return std::unexpected(
-          HttpError{Status::NotImplemented, "unsupported transfer-encoding", false});
+          HttpError{Status::NotImplemented, "unsupported transfer-encoding", false}
+      );
     }
     is_chunked = true;
   }
@@ -297,8 +299,13 @@ std::expected<Request, HttpError> parse_request(std::string_view buffer,
     *consumed = request_size;
   }
 
-  Request request{method, std::string{path}, std::string{query}, std::move(headers),
-                  std::move(body)};
+  Request request{
+      method,
+      std::move(*normalized_path),
+      std::string{query},
+      std::move(headers),
+      std::move(body)
+  };
   request.set_version(version == "HTTP/1.0" ? HttpVersion::Http10 : HttpVersion::Http11);
   request.set_query_params(parse_query(query));
   return request;

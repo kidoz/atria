@@ -3,6 +3,7 @@
 #include "atria/method.hpp"
 #include "atria/middleware.hpp"
 #include "atria/request.hpp"
+#include "atria/url.hpp"
 
 #include <array>
 #include <cstddef>
@@ -130,12 +131,13 @@ struct Router::Impl {
 };
 
 Router::Router() : impl_(std::make_unique<Impl>()) {}
+
 Router::~Router() = default;
 Router::Router(Router&&) noexcept = default;
 Router& Router::operator=(Router&&) noexcept = default;
 
-std::expected<RouteMeta*, RouteError> Router::add(Method method, std::string_view path,
-                                                    Handler handler) {
+std::expected<RouteMeta*, RouteError>
+Router::add(Method method, std::string_view path, Handler handler) {
   auto compiled = compile_path(path);
   if (!compiled.has_value()) {
     return std::unexpected(compiled.error());
@@ -182,13 +184,18 @@ void Router::for_each_route(const std::function<void(const RouteMeta&)>& visitor
 }
 
 MatchResult Router::match(Method method, std::string_view path) const {
-  auto segments = split_path(path);
+  auto segments = decode_path_segments(path);
+  if (!segments.has_value()) {
+    return MatchResult{
+        .outcome = MatchOutcome::NotFound,
+        .handler = {},
+        .params = {},
+    };
+  }
+
   const Node* node = &impl_->root;
   Request::PathParams params;
-  for (const auto& s : segments) {
-    if (s.empty() && segments.size() == 1) {
-      break;
-    }
+  for (const auto& s : *segments) {
     const Node* next = node->find_literal(s);
     if (next != nullptr) {
       node = next;
@@ -199,19 +206,35 @@ MatchResult Router::match(Method method, std::string_view path) const {
       node = node->param_child.get();
       continue;
     }
-    return {MatchOutcome::NotFound, {}, {}};
+    return MatchResult{
+        .outcome = MatchOutcome::NotFound,
+        .handler = {},
+        .params = {},
+    };
   }
 
   std::size_t idx = method_index(method);
   if (node->has_handler[idx]) {
-    return {MatchOutcome::Found, node->handlers[idx], std::move(params)};
+    return MatchResult{
+        .outcome = MatchOutcome::Found,
+        .handler = node->handlers[idx],
+        .params = std::move(params),
+    };
   }
   for (std::size_t i = 0; i < kMethodCount; ++i) {
     if (node->has_handler[i]) {
-      return {MatchOutcome::MethodNotAllowed, {}, {}};
+      return MatchResult{
+          .outcome = MatchOutcome::MethodNotAllowed,
+          .handler = {},
+          .params = {},
+      };
     }
   }
-  return {MatchOutcome::NotFound, {}, {}};
+  return MatchResult{
+      .outcome = MatchOutcome::NotFound,
+      .handler = {},
+      .params = {},
+  };
 }
 
 RouteGroup::RouteGroup(Router& router, std::string prefix)
@@ -250,21 +273,27 @@ RouteMeta* RouteGroup::add(Method method, std::string_view path, Handler handler
 RouteBuilder RouteGroup::get(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Get, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::post(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Post, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::put(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Put, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::patch(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Patch, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::del(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Delete, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::options(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Options, path, std::move(handler))};
 }
+
 RouteBuilder RouteGroup::head(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Head, path, std::move(handler))};
 }
