@@ -13,6 +13,7 @@ atria_sources = files(
   'middleware/builtins.cpp',
   'net/connection.cpp',
   'net/notifier.cpp',
+  'net/periodic_timer.cpp',
   'net/server_runtime.cpp',
   'net/tcp_listener.cpp',
   'net/worker_pool.cpp',

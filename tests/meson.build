@@ -8,6 +8,7 @@ atria_tests = executable(
     'unit/test_json.cpp',
     'unit/test_middleware.cpp',
     'unit/test_openapi.cpp',
+    'unit/test_periodic_timer.cpp',
     'unit/test_range.cpp',
     'unit/test_response.cpp',
     'unit/test_router.cpp',
