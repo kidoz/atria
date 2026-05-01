@@ -12,6 +12,7 @@ atria_tests = executable(
     'unit/test_range.cpp',
     'unit/test_response.cpp',
     'unit/test_router.cpp',
+    'unit/test_router_root.cpp',
     'unit/test_url.cpp',
     'unit/test_validation.cpp',
     'integration/test_connection_limits.cpp',
