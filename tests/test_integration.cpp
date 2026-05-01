@@ -213,6 +213,49 @@ TEST_CASE("server returns 404 for unknown route", "[integration]") {
   REQUIRE(response.find(R"("code":"not_found")") != std::string::npos);
 }
 
+TEST_CASE(
+    "server rejects unsafe escaped request paths before dispatch",
+    "[integration][security]"
+) {
+  atria::Application app;
+  std::atomic<bool> middleware_called{false};
+  std::atomic<bool> handler_called{false};
+
+  app.use([&](atria::Request& request, atria::Next next) {
+    middleware_called.store(true);
+    return next(request);
+  });
+  app.get("/files/{name}", [&](atria::Request&) {
+    handler_called.store(true);
+    return atria::Response::empty(atria::Status::Ok);
+  });
+
+  RunningServer server;
+  server.port = pick_free_port_and_listen(app, server.thread);
+  server.app = &app;
+  REQUIRE(server.port != 0);
+
+  std::string encoded_separator_response = http_exchange(
+      server.port,
+      "GET /files/a%2Fb HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+  );
+  CHECK(encoded_separator_response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+
+  std::string invalid_escape_response = http_exchange(
+      server.port,
+      "GET /files/%XX HTTP/1.1\r\n"
+      "Host: 127.0.0.1\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+  );
+  CHECK(invalid_escape_response.find("HTTP/1.1 400 Bad Request\r\n") == 0);
+  CHECK_FALSE(middleware_called.load());
+  CHECK_FALSE(handler_called.load());
+}
+
 TEST_CASE("server keeps connection alive for multiple requests", "[integration][keep-alive]") {
   atria::Application app;
   app.get("/n", [](atria::Request&) {
