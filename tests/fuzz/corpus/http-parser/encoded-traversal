@@ -1,0 +1,3 @@
+GET /api/%2E%2E/files/hello%20world HTTP/1.1
+Host: 127.0.0.1
+

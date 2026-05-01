@@ -1,1 +1,2 @@
 option('benchmarks', type: 'boolean', value: false, description: 'Build microbenchmarks under benchmarks/')
+option('fuzz', type: 'boolean', value: false, description: 'Build fuzz harnesses under tests/fuzz/')

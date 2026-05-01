@@ -36,6 +36,18 @@ endif
 
 add_project_arguments(cxx.get_supported_arguments(extra_warnings), language: 'cpp')
 
+if get_option('fuzz')
+  if cxx.get_id() != 'clang'
+    error('The fuzz harness requires Clang. Configure with CC=clang CXX=clang++ -Dfuzz=true.')
+  endif
+  fuzz_instrument_args = ['-fsanitize=fuzzer-no-link,address,undefined', '-fno-omit-frame-pointer']
+  add_project_arguments(cxx.get_supported_arguments(fuzz_instrument_args), language: 'cpp')
+  add_project_link_arguments(
+    cxx.get_supported_link_arguments(['-fsanitize=fuzzer-no-link,address,undefined']),
+    language: 'cpp',
+  )
+endif
+
 threads_dep = dependency('threads')
 
 platform_deps = [threads_dep]
@@ -74,4 +86,8 @@ subdir('examples/websocket_chat')
 
 if get_option('benchmarks')
   subdir('benchmarks')
+endif
+
+if get_option('fuzz')
+  subdir('tests/fuzz')
 endif
