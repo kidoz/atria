@@ -84,6 +84,7 @@ subdir('tests')
 subdir('examples/todo_api')
 subdir('examples/di_api')
 subdir('examples/websocket_chat')
+subdir('examples/upnp_skeleton')
 
 if get_option('benchmarks')
   subdir('benchmarks')
