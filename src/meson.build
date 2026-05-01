@@ -4,6 +4,7 @@ atria_sources = files(
   'http/headers.cpp',
   'http/method.cpp',
   'http/parser.cpp',
+  'http/range.cpp',
   'http/request.cpp',
   'http/response.cpp',
   'http/status.cpp',

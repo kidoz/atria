@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -19,6 +20,13 @@ class Connection;
 
 class Json;
 enum class JsonKeyStyle : std::uint8_t;
+class Request;
+
+struct FileResponseOptions {
+  std::string content_type{"application/octet-stream"};
+  std::size_t chunk_size{std::size_t{64} * 1024};
+  bool allow_range{true};
+};
 
 // Pull-based chunk source for streaming responses. The runtime calls the provider on the
 // loop thread when the connection is ready to send more bytes. Returning std::nullopt (or
@@ -59,9 +67,12 @@ public:
   explicit Response(Status status, std::string body = {});
 
   static Response text(std::string body, Status status = Status::Ok);
+  static Response xml(std::string body, Status status = Status::Ok);
   static Response json(const Json& value, Status status = Status::Ok);
   static Response json(const Json& value, JsonKeyStyle key_style, Status status = Status::Ok);
   static Response empty(Status status = Status::NoContent);
+  static Response
+  file(const Request& request, const std::filesystem::path& path, FileResponseOptions options = {});
 
   // Streaming factory. The body is produced lazily by `provider`. If `content_length` is
   // supplied, the response uses Content-Length framing; otherwise the runtime selects

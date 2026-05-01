@@ -15,6 +15,8 @@ std::string_view reason_phrase(Status status) noexcept {
     return "Created";
   case Status::NoContent:
     return "No Content";
+  case Status::PartialContent:
+    return "Partial Content";
   case Status::BadRequest:
     return "Bad Request";
   case Status::Unauthorized:
@@ -29,6 +31,8 @@ std::string_view reason_phrase(Status status) noexcept {
     return "Payload Too Large";
   case Status::UnsupportedMediaType:
     return "Unsupported Media Type";
+  case Status::RangeNotSatisfiable:
+    return "Range Not Satisfiable";
   case Status::UnprocessableEntity:
     return "Unprocessable Entity";
   case Status::InternalServerError:
