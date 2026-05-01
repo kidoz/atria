@@ -41,7 +41,7 @@ namespace {
   return static_cast<std::size_t>(method);
 }
 
-constexpr std::size_t kMethodCount = 7;
+constexpr std::size_t kMethodCount = 10;
 
 struct Segment {
   std::string text;
@@ -296,6 +296,18 @@ RouteBuilder RouteGroup::options(std::string_view path, Handler handler) {
 
 RouteBuilder RouteGroup::head(std::string_view path, Handler handler) {
   return RouteBuilder{add(Method::Head, path, std::move(handler))};
+}
+
+RouteBuilder RouteGroup::subscribe(std::string_view path, Handler handler) {
+  return RouteBuilder{add(Method::Subscribe, path, std::move(handler))};
+}
+
+RouteBuilder RouteGroup::unsubscribe(std::string_view path, Handler handler) {
+  return RouteBuilder{add(Method::Unsubscribe, path, std::move(handler))};
+}
+
+RouteBuilder RouteGroup::notify(std::string_view path, Handler handler) {
+  return RouteBuilder{add(Method::Notify, path, std::move(handler))};
 }
 
 }  // namespace atria

@@ -106,6 +106,29 @@ TEST_CASE("rejects unsupported method", "[parser]") {
   CHECK(parsed.error().status == Status::NotImplemented);
 }
 
+TEST_CASE("parses UPnP eventing HTTP methods", "[parser][upnp]") {
+  std::string subscribe = "SUBSCRIBE /events HTTP/1.1\r\n"
+                          "Host: x\r\n"
+                          "\r\n";
+  auto parsed_subscribe = parse_request(subscribe, kDefaultLimits);
+  REQUIRE(parsed_subscribe.has_value());
+  CHECK(parsed_subscribe->method() == Method::Subscribe);
+
+  std::string unsubscribe = "UNSUBSCRIBE /events HTTP/1.1\r\n"
+                            "Host: x\r\n"
+                            "\r\n";
+  auto parsed_unsubscribe = parse_request(unsubscribe, kDefaultLimits);
+  REQUIRE(parsed_unsubscribe.has_value());
+  CHECK(parsed_unsubscribe->method() == Method::Unsubscribe);
+
+  std::string notify = "NOTIFY /events HTTP/1.1\r\n"
+                       "Host: x\r\n"
+                       "\r\n";
+  auto parsed_notify = parse_request(notify, kDefaultLimits);
+  REQUIRE(parsed_notify.has_value());
+  CHECK(parsed_notify->method() == Method::Notify);
+}
+
 TEST_CASE("rejects oversized header section", "[parser]") {
   std::string raw = "GET / HTTP/1.1\r\n"
                     "Host: x\r\n";

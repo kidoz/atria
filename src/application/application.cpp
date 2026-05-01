@@ -89,6 +89,18 @@ RouteBuilder Application::head(std::string_view path, Handler handler) {
   return make_builder(router_.add(Method::Head, path, std::move(handler)));
 }
 
+RouteBuilder Application::subscribe(std::string_view path, Handler handler) {
+  return make_builder(router_.add(Method::Subscribe, path, std::move(handler)));
+}
+
+RouteBuilder Application::unsubscribe(std::string_view path, Handler handler) {
+  return make_builder(router_.add(Method::Unsubscribe, path, std::move(handler)));
+}
+
+RouteBuilder Application::notify(std::string_view path, Handler handler) {
+  return make_builder(router_.add(Method::Notify, path, std::move(handler)));
+}
+
 RouteBuilder Application::websocket(std::string_view path, WebSocketHandler handler) {
   auto route = std::make_unique<WebSocketRoute>();
   route->path = std::string{path};

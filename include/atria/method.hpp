@@ -13,6 +13,9 @@ enum class Method : std::uint8_t {
   Delete,
   Options,
   Head,
+  Subscribe,
+  Unsubscribe,
+  Notify,
 };
 
 [[nodiscard]] std::string_view to_string(Method method) noexcept;

@@ -34,7 +34,7 @@ struct MatchResult {
 };
 
 class Router {
- public:
+public:
   Router();
   ~Router();
   Router(const Router&) = delete;
@@ -44,8 +44,7 @@ class Router {
 
   // Register a route. On success, returns a pointer to the metadata slot for the route
   // (owned by the router) so callers can attach OpenAPI metadata via RouteBuilder.
-  std::expected<RouteMeta*, RouteError> add(Method method, std::string_view path,
-                                              Handler handler);
+  std::expected<RouteMeta*, RouteError> add(Method method, std::string_view path, Handler handler);
 
   [[nodiscard]] MatchResult match(Method method, std::string_view path) const;
 
@@ -54,13 +53,13 @@ class Router {
   // stable across calls if no routes are added or removed in between.
   void for_each_route(const std::function<void(const RouteMeta&)>& visitor) const;
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
 class RouteGroup {
- public:
+public:
   RouteGroup(Router& router, std::string prefix);
 
   // Add middleware that wraps every handler registered through this group. Middleware
@@ -83,8 +82,11 @@ class RouteGroup {
   RouteBuilder del(std::string_view path, Handler handler);
   RouteBuilder options(std::string_view path, Handler handler);
   RouteBuilder head(std::string_view path, Handler handler);
+  RouteBuilder subscribe(std::string_view path, Handler handler);
+  RouteBuilder unsubscribe(std::string_view path, Handler handler);
+  RouteBuilder notify(std::string_view path, Handler handler);
 
- private:
+private:
   RouteMeta* add(Method method, std::string_view path, Handler handler);
   [[nodiscard]] Handler wrap_with_group_middleware(Handler handler) const;
 

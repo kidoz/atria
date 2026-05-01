@@ -35,6 +35,9 @@ public:
   RouteBuilder del(std::string_view path, Handler handler);
   RouteBuilder options(std::string_view path, Handler handler);
   RouteBuilder head(std::string_view path, Handler handler);
+  RouteBuilder subscribe(std::string_view path, Handler handler);
+  RouteBuilder unsubscribe(std::string_view path, Handler handler);
+  RouteBuilder notify(std::string_view path, Handler handler);
   RouteBuilder websocket(std::string_view path, WebSocketHandler handler);
 
   Application& group(std::string_view prefix, const std::function<void(RouteGroup&)>& builder);
