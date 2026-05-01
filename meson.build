@@ -58,6 +58,7 @@ if host_machine.system() == 'windows'
     'src/net/event_loop_poll.cpp',
   )
   platform_deps += cxx.find_library('ws2_32')
+  platform_deps += cxx.find_library('iphlpapi')
 elif host_machine.system() == 'linux'
   platform_sources = files(
     'src/platform/posix/posix_socket.cpp',

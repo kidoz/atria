@@ -7,6 +7,8 @@
 #include <cstring>
 #include <expected>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <string>
 #include <string_view>
@@ -239,6 +241,211 @@ std::expected<void, SocketError> set_nonblocking(SocketHandle& sock, bool enable
     return std::unexpected(errno_error("fcntl(F_SETFL)"));
   }
   return {};
+}
+
+std::expected<SocketHandle, SocketError> udp_open_ipv4() {
+  int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) {
+    return std::unexpected(errno_error("socket(udp)"));
+  }
+  return SocketHandle{fd};
+}
+
+namespace {
+
+[[nodiscard]] std::expected<in_addr, SocketError> parse_ipv4_address(std::string_view address) {
+  in_addr parsed{};
+  std::string address_text{address};
+  if (address_text.empty() || address_text == "0.0.0.0") {
+    parsed.s_addr = htonl(INADDR_ANY);
+    return parsed;
+  }
+  if (address_text == "localhost") {
+    parsed.s_addr = htonl(INADDR_LOOPBACK);
+    return parsed;
+  }
+  if (::inet_pton(AF_INET, address_text.c_str(), &parsed) != 1) {
+    return std::unexpected(
+        SocketError{"invalid IPv4 address: " + address_text, SocketErrorKind::Other}
+    );
+  }
+  return parsed;
+}
+
+[[nodiscard]] std::string ipv4_to_string(const in_addr& address) {
+  char text[INET_ADDRSTRLEN] = {0};
+  if (::inet_ntop(AF_INET, &address, text, sizeof(text)) == nullptr) {
+    return {};
+  }
+  return text;
+}
+
+}  // namespace
+
+std::expected<SocketHandle, SocketError>
+udp_bind_ipv4(std::string_view address, std::uint16_t port, bool reuse_address) {
+  auto socket = udp_open_ipv4();
+  if (!socket.has_value()) {
+    return std::unexpected(socket.error());
+  }
+
+  if (reuse_address) {
+    int yes = 1;
+    if (::setsockopt(socket->native(), SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
+      return std::unexpected(errno_error("setsockopt(SO_REUSEADDR)"));
+    }
+  }
+
+  auto parsed = parse_ipv4_address(address);
+  if (!parsed.has_value()) {
+    return std::unexpected(parsed.error());
+  }
+
+  sockaddr_in bind_address{};
+  bind_address.sin_family = AF_INET;
+  bind_address.sin_port = htons(port);
+  bind_address.sin_addr = *parsed;
+  if (::bind(
+          socket->native(),
+          reinterpret_cast<const sockaddr*>(&bind_address),
+          sizeof(bind_address)
+      ) < 0) {
+    return std::unexpected(errno_error("bind(udp)"));
+  }
+  return socket;
+}
+
+std::expected<std::size_t, SocketError>
+udp_send_to(SocketHandle& sock, std::string_view data, const UdpEndpoint& remote) {
+  auto remote_address = parse_ipv4_address(remote.address);
+  if (!remote_address.has_value()) {
+    return std::unexpected(remote_address.error());
+  }
+
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(remote.port);
+  address.sin_addr = *remote_address;
+  while (true) {
+    ssize_t sent = ::sendto(
+        sock.native(),
+        data.data(),
+        data.size(),
+        0,
+        reinterpret_cast<const sockaddr*>(&address),
+        sizeof(address)
+    );
+    if (sent >= 0) {
+      return static_cast<std::size_t>(sent);
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    return std::unexpected(errno_error("sendto"));
+  }
+}
+
+std::expected<UdpReceiveResult, SocketError>
+udp_recv_from(SocketHandle& sock, char* buffer, std::size_t capacity) {
+  while (true) {
+    sockaddr_in remote{};
+    socklen_t remote_len = sizeof(remote);
+    ssize_t received = ::recvfrom(
+        sock.native(),
+        buffer,
+        capacity,
+        0,
+        reinterpret_cast<sockaddr*>(&remote),
+        &remote_len
+    );
+    if (received >= 0) {
+      return UdpReceiveResult{
+          .bytes_received = static_cast<std::size_t>(received),
+          .remote = UdpEndpoint{ipv4_to_string(remote.sin_addr), ntohs(remote.sin_port)},
+      };
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    return std::unexpected(errno_error("recvfrom"));
+  }
+}
+
+std::expected<void, SocketError> udp_join_ipv4_multicast(
+    SocketHandle& sock,
+    std::string_view multicast_address,
+    std::string_view interface_address
+) {
+  auto group = parse_ipv4_address(multicast_address);
+  if (!group.has_value()) {
+    return std::unexpected(group.error());
+  }
+  auto iface = parse_ipv4_address(interface_address);
+  if (!iface.has_value()) {
+    return std::unexpected(iface.error());
+  }
+  ip_mreq request{};
+  request.imr_multiaddr = *group;
+  request.imr_interface = *iface;
+  if (::setsockopt(sock.native(), IPPROTO_IP, IP_ADD_MEMBERSHIP, &request, sizeof(request)) < 0) {
+    return std::unexpected(errno_error("setsockopt(IP_ADD_MEMBERSHIP)"));
+  }
+  return {};
+}
+
+std::expected<void, SocketError> udp_leave_ipv4_multicast(
+    SocketHandle& sock,
+    std::string_view multicast_address,
+    std::string_view interface_address
+) {
+  auto group = parse_ipv4_address(multicast_address);
+  if (!group.has_value()) {
+    return std::unexpected(group.error());
+  }
+  auto iface = parse_ipv4_address(interface_address);
+  if (!iface.has_value()) {
+    return std::unexpected(iface.error());
+  }
+  ip_mreq request{};
+  request.imr_multiaddr = *group;
+  request.imr_interface = *iface;
+  if (::setsockopt(sock.native(), IPPROTO_IP, IP_DROP_MEMBERSHIP, &request, sizeof(request)) < 0) {
+    return std::unexpected(errno_error("setsockopt(IP_DROP_MEMBERSHIP)"));
+  }
+  return {};
+}
+
+std::expected<std::vector<NetworkInterface>, SocketError> enumerate_ipv4_interfaces() {
+  ifaddrs* raw_interfaces = nullptr;
+  if (::getifaddrs(&raw_interfaces) != 0) {
+    return std::unexpected(errno_error("getifaddrs"));
+  }
+
+  std::vector<NetworkInterface> result;
+  for (ifaddrs* item = raw_interfaces; item != nullptr; item = item->ifa_next) {
+    if (item->ifa_addr == nullptr || item->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+    const auto* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+    std::string netmask;
+    if (item->ifa_netmask != nullptr) {
+      const auto* mask = reinterpret_cast<const sockaddr_in*>(item->ifa_netmask);
+      netmask = ipv4_to_string(mask->sin_addr);
+    }
+    const unsigned int flags = item->ifa_flags;
+    result.push_back(
+        NetworkInterface{
+            .name = item->ifa_name == nullptr ? std::string{} : std::string{item->ifa_name},
+            .ipv4_address = ipv4_to_string(address->sin_addr),
+            .netmask = std::move(netmask),
+            .is_up = (flags & IFF_UP) != 0U,
+            .is_loopback = (flags & IFF_LOOPBACK) != 0U,
+            .supports_multicast = (flags & IFF_MULTICAST) != 0U,
+        }
+    );
+  }
+  ::freeifaddrs(raw_interfaces);
+  return result;
 }
 
 }  // namespace atria::platform

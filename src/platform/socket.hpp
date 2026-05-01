@@ -5,6 +5,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -32,6 +33,25 @@ enum class SocketErrorKind : std::uint8_t {
 struct SocketError {
   std::string message;
   SocketErrorKind kind{SocketErrorKind::Other};
+};
+
+struct UdpEndpoint {
+  std::string address;
+  std::uint16_t port{0};
+};
+
+struct UdpReceiveResult {
+  std::size_t bytes_received{0};
+  UdpEndpoint remote;
+};
+
+struct NetworkInterface {
+  std::string name;
+  std::string ipv4_address;
+  std::string netmask;
+  bool is_up{false};
+  bool is_loopback{false};
+  bool supports_multicast{false};
 };
 
 void global_init();
@@ -108,5 +128,30 @@ set_send_timeout(SocketHandle& sock, std::uint32_t milliseconds);
 
 // Non-blocking flag. Used by the event-loop runtime; not used by thread-per-connection.
 [[nodiscard]] std::expected<void, SocketError> set_nonblocking(SocketHandle& sock, bool enable);
+
+[[nodiscard]] std::expected<SocketHandle, SocketError> udp_open_ipv4();
+
+[[nodiscard]] std::expected<SocketHandle, SocketError>
+udp_bind_ipv4(std::string_view address, std::uint16_t port, bool reuse_address);
+
+[[nodiscard]] std::expected<std::size_t, SocketError>
+udp_send_to(SocketHandle& sock, std::string_view data, const UdpEndpoint& remote);
+
+[[nodiscard]] std::expected<UdpReceiveResult, SocketError>
+udp_recv_from(SocketHandle& sock, char* buffer, std::size_t capacity);
+
+[[nodiscard]] std::expected<void, SocketError> udp_join_ipv4_multicast(
+    SocketHandle& sock,
+    std::string_view multicast_address,
+    std::string_view interface_address
+);
+
+[[nodiscard]] std::expected<void, SocketError> udp_leave_ipv4_multicast(
+    SocketHandle& sock,
+    std::string_view multicast_address,
+    std::string_view interface_address
+);
+
+[[nodiscard]] std::expected<std::vector<NetworkInterface>, SocketError> enumerate_ipv4_interfaces();
 
 }  // namespace atria::platform

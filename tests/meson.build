@@ -18,6 +18,7 @@ atria_tests = executable(
     'integration/test_integration.cpp',
     'integration/test_runtime_chaos.cpp',
     'integration/test_streaming.cpp',
+    'integration/test_udp.cpp',
     'integration/test_websocket.cpp',
     'integration/test_worker_pool.cpp',
   ),
